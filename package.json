@@ -1,6 +1,6 @@
 {
   "name": "rag-memory-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Advanced MCP server for RAG-enabled memory through a knowledge graph with vector search",
   "license": "MIT",
   "author": "ttommyth",
