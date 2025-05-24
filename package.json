@@ -1,0 +1,39 @@
+{
+  "name": "rag-memory-mcp",
+  "version": "1.0.0",
+  "description": "Advanced MCP server for RAG-enabled memory through a knowledge graph with vector search",
+  "license": "MIT",
+  "author": "ttommyth",
+  "homepage": "https://github.com/ttommyth/rag-memory-mcp",
+  "bugs": "https://github.com/ttommyth/rag-memory-mcp/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ttommyth/rag-memory-mcp.git"
+  },
+  "type": "module",
+  "bin": {
+    "rag-memory-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.5.1",
+    "@modelcontextprotocol/sdk": "1.0.1",
+    "better-sqlite3": "^11.10.0",
+    "sqlite-vec": "^0.1.6",
+    "tiktoken": "^1.0.17",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22",
+    "shx": "^0.3.4",
+    "typescript": "^5.6.2"
+  }
+}
