@@ -1,0 +1,33 @@
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Source files
+src/
+.notes/
+.history/
+
+# Development files
+tsconfig.json
+.gitignore
+*.tsbuildinfo
+
+# Test files
+test/
+tests/
+*.test.ts
+*.spec.ts
+
+# Documentation not needed in package
+*.md
+!README.md
+
+# Environment and config files
+.env*
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db 

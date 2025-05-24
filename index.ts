@@ -176,9 +176,16 @@ class RAGKnowledgeGraphManager {
       )
     `);
 
-    // Vector embeddings using sqlite-vec
+    // Vector embeddings using sqlite-vec for document chunks
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING vec0(
+        embedding FLOAT[384]
+      )
+    `);
+
+    // NEW: Vector embeddings for entities using sqlite-vec
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
         embedding FLOAT[384]
       )
     `);
@@ -195,6 +202,17 @@ class RAGKnowledgeGraphManager {
         end_pos INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+      )
+    `);
+
+    // NEW: Entity embedding metadata
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_embedding_metadata (
+        rowid INTEGER PRIMARY KEY,
+        entity_id TEXT UNIQUE,
+        embedding_text TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
       )
     `);
 
@@ -216,9 +234,10 @@ class RAGKnowledgeGraphManager {
       CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity);
       CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id);
       CREATE INDEX IF NOT EXISTS idx_chunk_metadata_document ON chunk_metadata(document_id);
+      CREATE INDEX IF NOT EXISTS idx_entity_embedding_metadata_entity ON entity_embedding_metadata(entity_id);
     `);
 
-    console.error('🔧 Database tables created with relaxed FK constraints for easier deletion');
+    console.error('🔧 Database tables created with entity vector support for semantic search');
   }
 
   cleanup() {
@@ -256,6 +275,10 @@ class RAGKnowledgeGraphManager {
       const result = stmt.run(entityId, entity.name, entity.entityType, observations, metadata);
       if (result.changes > 0) {
         newEntities.push(entity);
+        
+        // Generate embedding for the new entity
+        console.error(`🔮 Generating embedding for new entity: ${entity.name}`);
+        await this.embedEntity(entityId);
       }
     }
 
@@ -319,6 +342,10 @@ class RAGKnowledgeGraphManager {
         this.db.prepare(`
           UPDATE entities SET observations = ? WHERE id = ?
         `).run(JSON.stringify(updatedObservations), entityId);
+        
+        // Regenerate embedding for the updated entity
+        console.error(`🔮 Regenerating embedding for updated entity: ${obs.entityName}`);
+        await this.embedEntity(entityId);
       }
       
       results.push({ entityName: obs.entityName, addedObservations: newObservations });
@@ -344,6 +371,25 @@ class RAGKnowledgeGraphManager {
         if (!entityExists) {
           console.warn(`⚠️ Entity '${name}' not found, skipping`);
           continue;
+        }
+        
+        // Step 0: Delete entity embeddings
+        const embeddingMetadata = this.db.prepare(`
+          SELECT rowid FROM entity_embedding_metadata WHERE entity_id = ?
+        `).get(entityId) as { rowid: number } | undefined;
+        
+        if (embeddingMetadata) {
+          const embeddings = this.db.prepare(`
+            DELETE FROM entity_embeddings WHERE rowid = ?
+          `).run(embeddingMetadata.rowid);
+          
+          const metadata = this.db.prepare(`
+            DELETE FROM entity_embedding_metadata WHERE entity_id = ?
+          `).run(entityId);
+          
+          if (embeddings.changes > 0 || metadata.changes > 0) {
+            console.error(`  ├─ Removed entity embeddings for '${name}'`);
+          }
         }
         
         // Step 1: Delete chunk-entity associations
@@ -447,25 +493,54 @@ class RAGKnowledgeGraphManager {
     return { entities, relations };
   }
 
-  async searchNodes(query: string): Promise<KnowledgeGraph> {
+  async searchNodes(query: string, limit = 10): Promise<KnowledgeGraph> {
     if (!this.db) throw new Error('Database not initialized');
     
-    const searchTerm = `%${query.toLowerCase()}%`;
+    console.error(`🔍 Semantic entity search: "${query}"`);
     
-    const entities = this.db.prepare(`
-      SELECT name, entityType, observations FROM entities
-      WHERE LOWER(name) LIKE ? OR LOWER(entityType) LIKE ? OR LOWER(observations) LIKE ?
-    `).all(searchTerm, searchTerm, searchTerm).map((row: any) => ({
-      name: row.name,
-      entityType: row.entityType,
-      observations: JSON.parse(row.observations)
-    }));
+    // Generate query embedding
+    const queryEmbedding = await this.generateEmbedding(query);
     
-    const entityNames = entities.map(e => e.name);
-    if (entityNames.length === 0) {
+    // Perform vector similarity search on entities
+    const entityResults = this.db.prepare(`
+      SELECT 
+        ee.rowid,
+        eem.entity_id,
+        eem.embedding_text,
+        ee.distance,
+        e.name,
+        e.entityType,
+        e.observations
+      FROM entity_embeddings ee
+      JOIN entity_embedding_metadata eem ON ee.rowid = eem.rowid
+      JOIN entities e ON eem.entity_id = e.id
+      WHERE ee.embedding MATCH ?
+        AND k = ?
+      ORDER BY ee.distance
+    `).all(Buffer.from(queryEmbedding.buffer), limit) as Array<{
+      rowid: number;
+      entity_id: string;
+      embedding_text: string;
+      distance: number;
+      name: string;
+      entityType: string;
+      observations: string;
+    }>;
+    
+    if (entityResults.length === 0) {
+      console.error(`ℹ️ No semantic matches found for "${query}"`);
       return { entities: [], relations: [] };
     }
     
+    const entities = entityResults.map(result => ({
+      name: result.name,
+      entityType: result.entityType,
+      observations: JSON.parse(result.observations),
+      similarity: 1 / (1 + result.distance) // Convert distance to similarity score
+    }));
+    
+    // Get relationships between the found entities
+    const entityNames = entities.map(e => e.name);
     const relations = this.db.prepare(`
       SELECT 
         e1.name as from_name,
@@ -482,6 +557,8 @@ class RAGKnowledgeGraphManager {
       relationType: row.relationType
     }));
 
+    console.error(`✅ Found ${entities.length} semantically similar entities with ${relations.length} relationships`);
+    
     return { entities, relations };
   }
 
@@ -521,6 +598,92 @@ class RAGKnowledgeGraphManager {
   }
 
   // === NEW RAG FUNCTIONALITY ===
+
+  // Generate embedding text for an entity (combines name, type, and observations)
+  private generateEntityEmbeddingText(entity: { name: string; entityType: string; observations: string[] }): string {
+    const observationsText = entity.observations.join('. ');
+    return `${entity.name}. Type: ${entity.entityType}. ${observationsText}`.trim();
+  }
+
+  // Generate and store embedding for a single entity
+  private async embedEntity(entityId: string): Promise<boolean> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    // Get entity data
+    const entity = this.db.prepare(`
+      SELECT name, entityType, observations FROM entities WHERE id = ?
+    `).get(entityId) as { name: string; entityType: string; observations: string } | undefined;
+    
+    if (!entity) {
+      console.warn(`Entity ${entityId} not found for embedding`);
+      return false;
+    }
+    
+    const parsedObservations = JSON.parse(entity.observations);
+    const embeddingText = this.generateEntityEmbeddingText({
+      name: entity.name,
+      entityType: entity.entityType,
+      observations: parsedObservations
+    });
+    
+    // Generate embedding
+    const embedding = await this.generateEmbedding(embeddingText);
+    
+    try {
+      // Delete existing embedding if any
+      const existingMetadata = this.db.prepare(`
+        SELECT rowid FROM entity_embedding_metadata WHERE entity_id = ?
+      `).get(entityId) as { rowid: number } | undefined;
+      
+      if (existingMetadata) {
+        this.db.prepare(`DELETE FROM entity_embeddings WHERE rowid = ?`).run(existingMetadata.rowid);
+        this.db.prepare(`DELETE FROM entity_embedding_metadata WHERE entity_id = ?`).run(entityId);
+      }
+      
+      // Insert new embedding
+      const result = this.db.prepare(`
+        INSERT INTO entity_embeddings (embedding) VALUES (?)
+      `).run(Buffer.from(embedding.buffer));
+      
+      // Store metadata
+      this.db.prepare(`
+        INSERT INTO entity_embedding_metadata (rowid, entity_id, embedding_text)
+        VALUES (?, ?, ?)
+      `).run(result.lastInsertRowid, entityId, embeddingText);
+      
+      return true;
+    } catch (error) {
+      console.error(`Failed to embed entity ${entityId}:`, error);
+      return false;
+    }
+  }
+
+  // Embed all entities in the knowledge graph
+  async embedAllEntities(): Promise<{ totalEntities: number; embeddedEntities: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    console.error('🔮 Generating embeddings for all entities...');
+    
+    const entities = this.db.prepare(`
+      SELECT id FROM entities
+    `).all() as Array<{ id: string }>;
+    
+    let embeddedCount = 0;
+    
+    for (const entity of entities) {
+      const success = await this.embedEntity(entity.id);
+      if (success) {
+        embeddedCount++;
+      }
+    }
+    
+    console.error(`✅ Entity embeddings completed: ${embeddedCount}/${entities.length} entities embedded`);
+    
+    return {
+      totalEntities: entities.length,
+      embeddedEntities: embeddedCount
+    };
+  }
 
   // Simple configurable term extraction (replacing hardcoded patterns)
   private extractTermsFromText(text: string, options: {
@@ -596,36 +759,199 @@ class RAGKnowledgeGraphManager {
         return new Float32Array(embedding.slice(0, dimensions));
         
       } catch (error) {
-        console.error('⚠️ Embedding model failed, falling back to simple embedding:', error);
-        // Fall through to simple implementation
+        console.error('⚠️ Embedding model failed, falling back to enhanced general semantic embedding:', error);
+        // Fall through to enhanced general implementation
       }
     }
     
-    // Fallback: Simple TF-IDF like approach (much simpler than the complex hash-based one)
-    if (!this.encoding) {
-      throw new Error('Tokenizer not initialized');
-    }
-    
-    const tokens = this.encoding.encode(text);
+    // Enhanced general-purpose semantic embedding
     const embedding = new Array(dimensions).fill(0);
     
-    // Simple approach: use token frequency
-    const tokenCounts = new Map<number, number>();
-    tokens.forEach((token: number) => {
-      tokenCounts.set(token, (tokenCounts.get(token) || 0) + 1);
-    });
+    // Normalize and tokenize text
+    const normalizedText = text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const words = normalizedText.split(' ').filter(word => word.length > 1);
     
-    // Create embedding based on token frequencies
-    let idx = 0;
-    for (const [token, count] of tokenCounts.entries()) {
-      if (idx >= dimensions) break;
-      embedding[idx % dimensions] += count / tokens.length;
-      idx++;
+    if (words.length === 0) {
+      return new Float32Array(embedding);
     }
     
-    // Normalize the embedding
+    // Enhanced word importance calculation
+    const wordFreq = new Map<string, number>();
+    const wordPositions = new Map<string, number[]>();
+    
+    words.forEach((word, position) => {
+      wordFreq.set(word, (wordFreq.get(word) || 0) + 1);
+      if (!wordPositions.has(word)) {
+        wordPositions.set(word, []);
+      }
+      wordPositions.get(word)!.push(position);
+    });
+    
+    const totalWords = words.length;
+    const uniqueWords = wordFreq.size;
+    const vocabulary = Array.from(wordFreq.keys());
+    
+    // Create enhanced semantic features for each unique word
+    vocabulary.forEach(word => {
+      const freq = wordFreq.get(word) || 1;
+      const positions = wordPositions.get(word) || [];
+      
+      // Enhanced TF-IDF calculation
+      const tf = freq / totalWords;
+      const idf = Math.log(totalWords / freq); // More aggressive IDF for rare words
+      const tfidf = tf * idf;
+      
+      // Multi-position importance (average of all positions)
+      const avgPosition = positions.reduce((sum, pos) => sum + pos, 0) / positions.length;
+      const positionWeight = this.calculatePositionWeight(avgPosition, totalWords);
+      
+      // Word characteristics for semantic diversity
+      const wordLength = word.length;
+      const vowelCount = (word.match(/[aeiou]/g) || []).length;
+      const consonantCount = wordLength - vowelCount;
+      const vowelRatio = vowelCount / wordLength;
+      const hasCapitals = /[A-Z]/.test(word);
+      const hasNumbers = /\d/.test(word);
+      
+      // Word complexity indicators
+      const isLongWord = wordLength > 6;
+      const isRareWord = freq === 1 && wordLength > 4;
+      const isCompoundWord = word.includes('_') || word.includes('-');
+      
+      // Multiple hash functions for better semantic distribution
+      const hash1 = this.semanticHash(word, 1);
+      const hash2 = this.semanticHash(word, 2);
+      const hash3 = this.semanticHash(word, 3);
+      const hash4 = this.semanticHash(word + '_semantic', 1);
+      
+      // Enhanced base weight with word importance
+      let baseWeight = tfidf * positionWeight;
+      
+      // Boost important words
+      if (isLongWord) baseWeight *= 1.3;
+      if (isRareWord) baseWeight *= 1.5;
+      if (isCompoundWord) baseWeight *= 1.2;
+      if (hasCapitals) baseWeight *= 1.1;
+      
+      // Primary word representation with enhanced distribution
+      embedding[hash1 % dimensions] += baseWeight * 1.2;
+      embedding[hash2 % dimensions] += baseWeight * 1.0;
+      embedding[hash3 % dimensions] += baseWeight * 0.8;
+      
+      // Character-level features
+      embedding[hash4 % dimensions] += vowelRatio * baseWeight * 0.5;
+      embedding[(hash1 + wordLength) % dimensions] += (wordLength / 15.0) * baseWeight * 0.4;
+      
+      // Structural and linguistic features
+      if (hasCapitals) {
+        embedding[(hash2 + 7) % dimensions] += baseWeight * 0.6;
+      }
+      if (hasNumbers) {
+        embedding[(hash3 + 11) % dimensions] += baseWeight * 0.6;
+      }
+      if (wordLength > 8) {  // Complex words get special treatment
+        embedding[(hash1 + 13) % dimensions] += baseWeight * 0.7;
+      }
+      
+      // Enhanced n-gram features with better context
+      positions.forEach(position => {
+        // Bigram features
+        if (position > 0) {
+          const bigram = words[position - 1] + '_' + word;
+          const bigramHash = this.semanticHash(bigram, 4);
+          embedding[bigramHash % dimensions] += baseWeight * 0.5;
+        }
+        
+        if (position < words.length - 1) {
+          const nextBigram = word + '_' + words[position + 1];
+          const nextBigramHash = this.semanticHash(nextBigram, 5);
+          embedding[nextBigramHash % dimensions] += baseWeight * 0.5;
+        }
+        
+        // Trigram features for important words
+        if (isLongWord || isRareWord) {
+          if (position > 0 && position < words.length - 1) {
+            const trigram = words[position - 1] + '_' + word + '_' + words[position + 1];
+            const trigramHash = this.semanticHash(trigram, 6);
+            embedding[trigramHash % dimensions] += baseWeight * 0.3;
+          }
+        }
+      });
+      
+      // Enhanced prefix/suffix features for morphological richness
+      if (wordLength >= 3) {
+        const prefix2 = word.substring(0, Math.min(2, wordLength));
+        const prefix3 = word.substring(0, Math.min(3, wordLength));
+        const suffix2 = word.substring(Math.max(0, wordLength - 2));
+        const suffix3 = word.substring(Math.max(0, wordLength - 3));
+        
+        const prefix2Hash = this.semanticHash(prefix2 + '_pre2', 7);
+        const prefix3Hash = this.semanticHash(prefix3 + '_pre3', 8);
+        const suffix2Hash = this.semanticHash(suffix2 + '_suf2', 9);
+        const suffix3Hash = this.semanticHash(suffix3 + '_suf3', 10);
+        
+        embedding[prefix2Hash % dimensions] += baseWeight * 0.3;
+        embedding[prefix3Hash % dimensions] += baseWeight * 0.4;
+        embedding[suffix2Hash % dimensions] += baseWeight * 0.3;
+        embedding[suffix3Hash % dimensions] += baseWeight * 0.4;
+      }
+    });
+    
+    // Enhanced global text features
+    const avgWordLength = words.reduce((sum, word) => sum + word.length, 0) / words.length;
+    const maxWordLength = Math.max(...words.map(w => w.length));
+    const textComplexity = uniqueWords / totalWords;
+    const textDensity = Math.log(1 + totalWords);
+    const lexicalDiversity = uniqueWords / Math.sqrt(totalWords); // Better diversity measure
+    
+    // Distribute enhanced global features
+    const globalHash1 = this.semanticHash('_global_complexity_', 11);
+    const globalHash2 = this.semanticHash('_global_density_', 12);
+    const globalHash3 = this.semanticHash('_global_length_', 13);
+    const globalHash4 = this.semanticHash('_global_diversity_', 14);
+    const globalHash5 = this.semanticHash('_global_max_word_', 15);
+    
+    embedding[globalHash1 % dimensions] += textComplexity * 0.6;
+    embedding[globalHash2 % dimensions] += textDensity / 8.0;
+    embedding[globalHash3 % dimensions] += avgWordLength / 12.0;
+    embedding[globalHash4 % dimensions] += lexicalDiversity * 0.5;
+    embedding[globalHash5 % dimensions] += maxWordLength / 15.0;
+    
+    // Enhanced document length normalization
+    const docLengthNorm = Math.log(1 + totalWords);
+    for (let i = 0; i < dimensions; i++) {
+      embedding[i] = embedding[i] / Math.max(docLengthNorm, 1.0);
+    }
+    
+    // L2 normalization for cosine similarity
     const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    return new Float32Array(magnitude > 0 ? embedding.map(val => val / magnitude) : embedding);
+    const normalizedEmbedding = magnitude > 0 ? embedding.map(val => val / magnitude) : embedding;
+    
+    return new Float32Array(normalizedEmbedding);
+  }
+  
+  // Calculate position-based importance weight
+  private calculatePositionWeight(position: number, totalWords: number): number {
+    if (totalWords === 1) return 1.0;
+    
+    // Higher weight for beginning and end, lower for middle
+    const relativePos = position / (totalWords - 1);
+    
+    // U-shaped curve: higher at start (0) and end (1), lower in middle (0.5)
+    const positionWeight = 1.0 - 0.3 * Math.sin(relativePos * Math.PI);
+    
+    return positionWeight;
+  }
+  
+  // General-purpose semantic hash function
+  private semanticHash(str: string, seed: number): number {
+    let hash = seed;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash);
   }
 
   // === NEW SEPARATE TOOLS ===
@@ -1214,7 +1540,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "readGraph":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.readGraph(), null, 2) }] };
       case "searchNodes":
-        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.searchNodes((validatedArgs as any).query as string), null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.searchNodes((validatedArgs as any).query as string, (validatedArgs as any).limit || 10), null, 2) }] };
       case "openNodes":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.openNodes((validatedArgs as any).names as string[]), null, 2) }] };
       
@@ -1239,6 +1565,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.deleteDocuments((validatedArgs as any).documentIds as string | string[]), null, 2) }] };
       case "listDocuments":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.listDocuments((validatedArgs as any).includeMetadata !== false), null, 2) }] };
+      
+      // NEW: Entity embedding tools
+      case "embedAllEntities":
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.embedAllEntities(), null, 2) }] };
       
       default:
         throw new Error(`Unknown tool: ${name}`);

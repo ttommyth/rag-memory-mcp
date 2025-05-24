@@ -8,7 +8,7 @@
   "bugs": "https://github.com/ttommyth/rag-memory-mcp/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ttommyth/rag-memory-mcp.git"
+    "url": "git+https://github.com/ttommyth/rag-memory-mcp.git"
   },
   "type": "module",
   "bin": {

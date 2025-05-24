@@ -73,13 +73,18 @@ export const readGraphTool: ToolDefinition = {
 // === SEARCH NODES TOOL ===
 
 const searchNodesCapability: ToolCapabilityInfo = {
-  description: 'Search for specific nodes in the knowledge graph using flexible text queries',
+  description: 'Search for entities in the knowledge graph using semantic vector similarity',
   parameters: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: 'Search query to match against entity names, types, and observations'
+        description: 'Natural language search query for semantic similarity matching'
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum number of results to return',
+        default: 10
       }
     },
     required: ['query'],
@@ -87,59 +92,61 @@ const searchNodesCapability: ToolCapabilityInfo = {
 };
 
 const searchNodesDescription: ToolRegistrationDescription = () => `<description>
-Search for specific nodes (entities) in the knowledge graph using flexible text queries.
-**Perfect for targeted exploration and discovery within your knowledge graph.**
-Searches across entity names, types, and observation content for comprehensive matching.
+Search for specific nodes (entities) in the knowledge graph using semantic vector similarity.
+**Perfect for intelligent entity discovery using natural language queries.**
+Uses semantic embeddings to find conceptually similar entities, even without exact keyword matches.
 </description>
 
 <importantNotes>
-- (!important!) **Case-insensitive search** across names, types, and observations
-- (!important!) Returns matching entities with their complete information
-- (!important!) **Includes related relationships** between found entities
-- (!important!) More targeted than read_graph - better for large knowledge bases
+- (!important!) **Semantic vector search** - finds conceptually similar entities, not just keyword matches
+- (!important!) **Requires entity embeddings** - run embedAllEntities first for existing entities
+- (!important!) **Returns similarity scores** with matching entities and their relationships
+- (!important!) More intelligent than traditional pattern matching - understands context and meaning
 </importantNotes>
 
 <whenToUseThisTool>
-- When looking for specific entities or concepts in your graph
-- **Before creating new entities** - to check for existing similar ones
-- When exploring knowledge domains or topic areas
-- For targeted analysis of specific subjects or themes
-- When building subgraphs around particular concepts
-- For debugging entity naming or categorization issues
+- When looking for entities conceptually related to your query
+- **Before creating new entities** - to discover existing similar concepts
+- When exploring knowledge domains using natural language
+- For intelligent entity discovery without knowing exact names
+- When building semantic subgraphs around particular concepts
+- For content-aware entity exploration and research
 </whenToUseThisTool>
 
 <features>
-- Flexible text matching across multiple entity fields
+- Semantic similarity search using sentence transformers
+- Natural language query processing for entity discovery
+- Similarity scoring for result ranking and relevance
 - Returns complete entity information including observations
-- Includes relationships between matching entities
-- Case-insensitive and partial matching support
-- Structured results suitable for further processing
-- Performance optimized for large knowledge graphs
+- Includes relationships between semantically similar entities
+- Configurable result limits for focused or broad exploration
 </features>
 
 <bestPractices>
-- Use specific terms for targeted results, broad terms for exploration
-- Try different query variations if initial results are insufficient
-- Use entity type names (PERSON, CONCEPT, etc.) to filter by category
-- Combine with open_nodes for deeper exploration of interesting results
-- Consider using partial names or keywords for discovery
-- Review both entity details and relationships in results
+- Use natural language descriptions rather than exact keywords
+- Try conceptual queries like "artificial intelligence frameworks" or "database technologies"
+- Start with broader queries, then refine based on similarity scores
+- Ensure entities have embeddings (use embedAllEntities for existing entities)
+- Review similarity scores to understand conceptual relevance
+- Combine with openNodes for detailed analysis of interesting findings
 </bestPractices>
 
 <parameters>
-- query: Search terms to match against entity names, types, and observations (string, required)
+- query: Natural language search query for semantic entity discovery (string, required)
+- limit: Maximum number of similar entities to return, default 10 (number, optional)
 </parameters>
 
 <examples>
-- Find people: {"query": "Einstein"}
-- Find concepts: {"query": "machine learning"}
-- Find by type: {"query": "TECHNOLOGY"}
-- Find by observation: {"query": "developed by Facebook"}
-- Broad exploration: {"query": "physics"}
+- Conceptual search: {"query": "machine learning frameworks", "limit": 5}
+- Technology discovery: {"query": "web development tools"}
+- Domain exploration: {"query": "quantum physics concepts", "limit": 15}
+- Semantic similarity: {"query": "data visualization libraries"}
+- Research queries: {"query": "renewable energy technologies"}
 </examples>`;
 
 const searchNodesSchema: z.ZodRawShape = {
-  query: z.string().describe('Search query to match against entity names, types, and observation content'),
+  query: z.string().describe('Natural language search query for semantic entity discovery'),
+  limit: z.number().optional().default(10).describe('Maximum number of similar entities to return'),
 };
 
 export const searchNodesTool: ToolDefinition = {
