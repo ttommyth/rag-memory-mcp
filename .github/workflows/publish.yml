@@ -1,0 +1,67 @@
+name: Release Package
+
+on:
+  # push:
+  #   branches:
+  #     - main # Trigger on pushes to the main branch
+  workflow_dispatch: # Allows manual triggering
+    inputs: # Add inputs section
+      release_type: # Add release_type input
+        description: 'Type of release to perform (stable or rc)' # Add description
+        required: true # Make it required
+        default: 'stable' # Default to stable
+        type: choice # Use choice type
+        options: # Define options
+          - stable
+          - rc
+
+jobs:
+  release:
+    name: Release (${{ github.event.inputs.release_type }}) # Add input to job name for clarity
+    runs-on: ubuntu-latest
+    environment: release # This line pauses the job until approved
+    permissions:
+      contents: write # Needed to push tags, update package.json, create releases
+      issues: write # Needed to comment on issues/PRs linked in commits
+      pull-requests: write # Needed to comment on issues/PRs linked in commits
+      id-token: write # Needed for npm provenance if enabled
+
+    steps:
+      - name: Determine Branch
+        id: determine_branch
+        run: |
+          if [[ "${{ github.event.inputs.release_type }}" == "rc" ]]; then
+            echo "branch=next" >> $GITHUB_OUTPUT
+          else
+            echo "branch=main" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.determine_branch.outputs.branch }} # Checkout the determined branch
+          fetch-depth: 0 # Fetch all history for semantic-release analysis
+          persist-credentials: false # Recommended for semantic-release
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build package
+        run: pnpm run build
+
+      - name: Run semantic-release
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
