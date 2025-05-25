@@ -419,6 +419,89 @@ export const embedAllEntitiesTool: ToolDefinition = {
   schema: embedAllEntitiesSchema,
 };
 
+// === GET DETAILED CONTEXT TOOL ===
+
+const getDetailedContextCapability: ToolCapabilityInfo = {
+  description: 'Retrieve detailed context for a specific chunk including surrounding content',
+  parameters: {
+    type: 'object',
+    properties: {
+      chunkId: {
+        type: 'string',
+        description: 'ID of the chunk to get detailed context for'
+      },
+      includeSurrounding: {
+        type: 'boolean',
+        description: 'Whether to include surrounding chunks for better context',
+        default: true
+      }
+    },
+    required: ['chunkId'],
+  },
+};
+
+const getDetailedContextDescription: ToolRegistrationDescription = () => `<description>
+Retrieve comprehensive detailed context for a specific chunk, including the full text and surrounding content.
+**Essential companion to hybridSearch** - use this to get complete context after reviewing search summaries.
+Perfect drill-down tool for exploring the full content behind search result highlights.
+</description>
+
+<importantNotes>
+- (!important!) **Use after hybridSearch** - to explore full context of interesting results
+- (!important!) **Returns complete chunk text** - not just summaries or highlights
+- (!important!) **Includes surrounding chunks** - for better context understanding
+- (!important!) **Shows entity associations** - to understand knowledge graph connections
+</importantNotes>
+
+<whenToUseThisTool>
+- **After reviewing hybridSearch results** - to get full context of interesting chunks
+- When search summaries indicate relevant content that needs complete analysis
+- When you need full text for decision making or detailed understanding
+- When exploring content around a specific passage or concept
+- For reading complete passages in their original document context
+- When entity associations in search results warrant deeper investigation
+</whenToUseThisTool>
+
+<features>
+- Complete chunk text retrieval without truncation
+- Automatic surrounding chunk inclusion for context
+- Entity association information for knowledge graph insights
+- Document metadata and title for source identification
+- Structured context with clear before/after chunk positioning
+- Efficient lookup by chunk ID from search results
+</features>
+
+<bestPractices>
+- Use hybridSearch first to identify relevant chunks of interest
+- Review search summaries before requesting detailed context
+- Use surrounding context to understand passage flow and meaning
+- Pay attention to entity associations for related concept exploration
+- Combine with additional searches based on detailed context insights
+- Use for final verification when making knowledge-based decisions
+</bestPractices>
+
+<parameters>
+- chunkId: Chunk ID from search results (string, required)
+- includeSurrounding: Include before/after chunks, default true (boolean, optional)
+</parameters>
+
+<examples>
+- Full context: {"chunkId": "doc1_chunk_5"}
+- Context only: {"chunkId": "doc1_chunk_5", "includeSurrounding": false}
+- From search: {"chunkId": "advanced_delivery_features_technical_chunk_2"}
+</examples>`;
+
+const getDetailedContextSchema: z.ZodRawShape = {
+  chunkId: z.string().describe('ID of the chunk to get detailed context for'),
+  includeSurrounding: z.boolean().optional().default(true).describe('Whether to include surrounding chunks for better context'),
+};
+
+export const getDetailedContextTool: ToolDefinition = {
+  capability: getDetailedContextCapability,
+  description: getDetailedContextDescription,
+  schema: getDetailedContextSchema,
+};
+
 // Export all knowledge graph tools
 export const knowledgeGraphTools = {
   createEntities: createEntitiesTool,
@@ -426,4 +509,5 @@ export const knowledgeGraphTools = {
   addObservations: addObservationsTool,
   hybridSearch: hybridSearchTool,
   embedAllEntities: embedAllEntitiesTool,
+  getDetailedContext: getDetailedContextTool,
 }; 

@@ -78,6 +78,34 @@ interface SearchResult {
   distance: number;
 }
 
+// NEW: Enhanced search result with semantic summaries
+interface EnhancedSearchResult {
+  relevance_score: number;
+  key_highlight: string;
+  content_summary: string;
+  chunk_id: string;
+  document_title: string;
+  entities: string[];
+  vector_similarity: number;
+  graph_boost?: number;
+  full_context_available: boolean;
+}
+
+// NEW: Interface for detailed context retrieval
+interface DetailedContext {
+  chunk_id: string;
+  document_id: string;
+  full_text: string;
+  document_title: string;
+  surrounding_chunks?: Array<{
+    chunk_id: string;
+    text: string;
+    position: 'before' | 'after';
+  }>;
+  entities: string[];
+  metadata: Record<string, any>;
+}
+
 // Enhanced RAG-enabled Knowledge Graph Manager
 class RAGKnowledgeGraphManager {
   private db: Database.Database | null = null;
@@ -603,6 +631,155 @@ class RAGKnowledgeGraphManager {
   private generateEntityEmbeddingText(entity: { name: string; entityType: string; observations: string[] }): string {
     const observationsText = entity.observations.join('. ');
     return `${entity.name}. Type: ${entity.entityType}. ${observationsText}`.trim();
+  }
+
+  // NEW: Generic semantic summary generation methods
+  private splitIntoSentences(text: string): string[] {
+    // Split on sentence boundaries while preserving structure
+    return text
+      .split(/[.!?]+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 10) // Filter out very short fragments
+      .map(s => s.replace(/^\s*[-•]\s*/, '')); // Clean up list markers
+  }
+
+  private async calculateSentenceSimilarities(sentences: string[], queryEmbedding: Float32Array): Promise<number[]> {
+    const similarities: number[] = [];
+    
+    for (const sentence of sentences) {
+      const sentenceEmbedding = await this.generateEmbedding(sentence);
+      const similarity = this.cosineSimilarity(queryEmbedding, sentenceEmbedding);
+      similarities.push(similarity);
+    }
+    
+    return similarities;
+  }
+
+  private cosineSimilarity(a: Float32Array, b: Float32Array): number {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  private enhanceSimilarityWithContext(similarities: number[], sentences: string[], entities: string[]): number[] {
+    const enhanced = [...similarities];
+    
+    for (let i = 0; i < sentences.length; i++) {
+      const sentence = sentences[i].toLowerCase();
+      let contextBoost = 0;
+      
+      // Generic boost for entity mentions (works across all domains)
+      for (const entity of entities) {
+        if (sentence.includes(entity.toLowerCase())) {
+          contextBoost += 0.1; // Moderate boost for entity relevance
+        }
+      }
+      
+      // Generic boost for sentences with numbers (often contain key facts)
+      if (/\b\d+/.test(sentence)) {
+        contextBoost += 0.05;
+      }
+      
+      // Generic boost for sentences with specific keywords that often indicate importance
+      const importanceWords = ['important', 'key', 'main', 'primary', 'essential', 'critical', 'significant'];
+      for (const word of importanceWords) {
+        if (sentence.includes(word)) {
+          contextBoost += 0.03;
+          break; // Only boost once per sentence
+        }
+      }
+      
+      enhanced[i] += contextBoost;
+    }
+    
+    return enhanced;
+  }
+
+  private async generateContentSummary(
+    chunkText: string, 
+    queryEmbedding: Float32Array, 
+    entities: string[], 
+    maxSentences = 2
+  ): Promise<{ summary: string; keyHighlight: string; relevanceScore: number }> {
+    
+    const sentences = this.splitIntoSentences(chunkText);
+    
+    if (sentences.length === 0) {
+      return {
+        summary: chunkText.substring(0, 150) + (chunkText.length > 150 ? '...' : ''),
+        keyHighlight: chunkText.substring(0, 100) + (chunkText.length > 100 ? '...' : ''),
+        relevanceScore: 0.1
+      };
+    }
+    
+    // Calculate semantic similarities
+    const similarities = await this.calculateSentenceSimilarities(sentences, queryEmbedding);
+    
+    // Apply generic context enhancement
+    const enhancedSimilarities = this.enhanceSimilarityWithContext(similarities, sentences, entities);
+    
+    // Rank sentences by relevance
+    const rankedIndices = Array.from({ length: sentences.length }, (_, i) => i)
+      .sort((a, b) => enhancedSimilarities[b] - enhancedSimilarities[a]);
+    
+    // Select top sentences with diversity (avoid adjacent sentences)
+    const selectedSentences: Array<{ text: string; score: number; index: number }> = [];
+    const usedIndices = new Set<number>();
+    
+    for (const idx of rankedIndices) {
+      if (selectedSentences.length >= maxSentences) break;
+      
+      // Prefer non-adjacent sentences for better coverage
+      const hasAdjacent = Array.from(usedIndices).some(usedIdx => Math.abs(idx - usedIdx) <= 1);
+      
+      if (!hasAdjacent || selectedSentences.length === 0) {
+        selectedSentences.push({
+          text: sentences[idx],
+          score: enhancedSimilarities[idx],
+          index: idx
+        });
+        usedIndices.add(idx);
+      }
+    }
+    
+    // Fallback: if still empty, take the top sentence regardless of adjacency
+    if (selectedSentences.length === 0) {
+      selectedSentences.push({
+        text: sentences[rankedIndices[0]],
+        score: enhancedSimilarities[rankedIndices[0]],
+        index: rankedIndices[0]
+      });
+    }
+    
+    // Create summary
+    const keyHighlight = selectedSentences[0].text;
+    
+    let summary: string;
+    if (selectedSentences.length === 1) {
+      summary = selectedSentences[0].text;
+    } else {
+      // Sort by original order for coherent reading
+      const orderedSentences = selectedSentences
+        .sort((a, b) => a.index - b.index)
+        .map(s => s.text);
+      summary = orderedSentences.join(' [...] ');
+    }
+    
+    const maxRelevanceScore = Math.max(...enhancedSimilarities);
+    
+    return {
+      summary: summary,
+      keyHighlight: keyHighlight,
+      relevanceScore: maxRelevanceScore
+    };
   }
 
   // Generate and store embedding for a single entity
@@ -1313,16 +1490,16 @@ class RAGKnowledgeGraphManager {
     return { documents };
   }
 
-  async hybridSearch(query: string, limit = 5, useGraph = true): Promise<SearchResult[]> {
+  async hybridSearch(query: string, limit = 5, useGraph = true): Promise<EnhancedSearchResult[]> {
     if (!this.db) throw new Error('Database not initialized');
     if (!this.encoding) throw new Error('Tokenizer not initialized');
     
-    console.error(`🔍 Hybrid search: "${query}"`);
+    console.error(`🔍 Enhanced hybrid search: "${query}"`);
     
-    // Vector search
-    const queryTokens = this.encoding.encode(query);
+    // Generate query embedding
     const queryEmbedding = await this.generateEmbedding(query);
     
+    // Vector search (get more results to allow for better selection)
     const vectorResults = this.db.prepare(`
       SELECT 
         c.rowid,
@@ -1333,7 +1510,6 @@ class RAGKnowledgeGraphManager {
         m.start_pos,
         m.end_pos,
         c.distance,
-        d.content as doc_content,
         d.metadata as doc_metadata
       FROM chunks c
       JOIN chunk_metadata m ON c.rowid = m.rowid
@@ -1350,58 +1526,41 @@ class RAGKnowledgeGraphManager {
       start_pos: number;
       end_pos: number;
       distance: number;
-      doc_content: string;
       doc_metadata: string;
     }>;
     
-    if (!useGraph) {
-      return vectorResults.slice(0, limit).map((result) => ({
-        chunk: {
-          id: result.chunk_id,
-          document_id: result.document_id,
-          chunk_index: result.chunk_index,
-          text: result.text,
-          start_pos: result.start_pos,
-          end_pos: result.end_pos
-        },
-        document: {
-          id: result.document_id,
-          content: result.doc_content,
-          metadata: JSON.parse(result.doc_metadata),
-          created_at: ''
-        },
-        entities: [],
-        vector_similarity: 1 / (1 + result.distance),
-        graph_boost: 0,
-        hybrid_score: 1 / (1 + result.distance),
-        distance: result.distance
-      }));
+    if (vectorResults.length === 0) {
+      console.error(`ℹ️ No vector matches found for "${query}"`);
+      return [];
     }
     
-    // Graph enhancement
-    const queryEntities = this.extractTermsFromText(query);
-    const connectedEntities = new Set<string>();
-    
-    for (const entity of queryEntities) {
-      const connected = this.db.prepare(`
-        SELECT DISTINCT
-          CASE 
-            WHEN r.source_entity = e1.id THEN e2.name
-            ELSE e1.name
-          END as connected_name
-        FROM entities e1
-        JOIN relationships r ON (r.source_entity = e1.id OR r.target_entity = e1.id)
-        JOIN entities e2 ON (e2.id = r.source_entity OR e2.id = r.target_entity)
-        WHERE e1.name = ? AND e2.name != ?
-      `).all(entity, entity) as { connected_name: string }[];
+    // Get entity information for graph enhancement
+    let connectedEntities = new Set<string>();
+    if (useGraph) {
+      const queryEntities = this.extractTermsFromText(query);
       
-      connected.forEach((row) => connectedEntities.add(row.connected_name));
+      for (const entity of queryEntities) {
+        const connected = this.db.prepare(`
+          SELECT DISTINCT
+            CASE 
+              WHEN r.source_entity = e1.id THEN e2.name
+              ELSE e1.name
+            END as connected_name
+          FROM entities e1
+          JOIN relationships r ON (r.source_entity = e1.id OR r.target_entity = e1.id)
+          JOIN entities e2 ON (e2.id = r.source_entity OR e2.id = r.target_entity)
+          WHERE e1.name = ? AND e2.name != ?
+        `).all(entity, entity) as { connected_name: string }[];
+        
+        connected.forEach((row) => connectedEntities.add(row.connected_name));
+      }
     }
     
-    // Enhance results with graph information
-    const enhancedResults: SearchResult[] = [];
+    // Process results with semantic summaries
+    const enhancedResults: EnhancedSearchResult[] = [];
     
     for (const result of vectorResults) {
+      // Get entities associated with this chunk
       const chunkEntities = this.db.prepare(`
         SELECT e.name 
         FROM chunk_entities ce
@@ -1409,45 +1568,145 @@ class RAGKnowledgeGraphManager {
         WHERE ce.chunk_rowid = ?
       `).all(result.rowid).map((row: any) => row.name);
       
+      // Calculate graph boost if using graph enhancement
       let graphBoost = 0;
-      for (const entity of chunkEntities) {
-        if (queryEntities.some(qe => qe.toLowerCase() === entity.toLowerCase())) {
-          graphBoost += 0.3;
-        }
-        if (connectedEntities.has(entity)) {
-          graphBoost += 0.1;
+      if (useGraph) {
+        const queryEntities = this.extractTermsFromText(query);
+        for (const entity of chunkEntities) {
+          if (queryEntities.some(qe => qe.toLowerCase() === entity.toLowerCase())) {
+            graphBoost += 0.2; // Exact entity match
+          }
+          if (connectedEntities.has(entity)) {
+            graphBoost += 0.1; // Connected entity
+          }
         }
       }
       
+      // Generate semantic summary
+      const { summary, keyHighlight, relevanceScore } = await this.generateContentSummary(
+        result.text,
+        queryEmbedding,
+        chunkEntities,
+        2 // Max 2 sentences for summary
+      );
+      
       const vectorSimilarity = 1 / (1 + result.distance);
-      const hybridScore = vectorSimilarity + graphBoost;
+      const finalScore = Math.max(vectorSimilarity, relevanceScore) + graphBoost;
+      
+      // Extract document title from metadata or use document ID
+      const metadata = JSON.parse(result.doc_metadata);
+      const documentTitle = metadata.title || metadata.name || result.document_id;
       
       enhancedResults.push({
-        chunk: {
-          id: result.chunk_id,
-          document_id: result.document_id,
-          chunk_index: result.chunk_index,
-          text: result.text,
-          start_pos: result.start_pos,
-          end_pos: result.end_pos
-        },
-        document: {
-          id: result.document_id,
-          content: result.doc_content,
-          metadata: JSON.parse(result.doc_metadata),
-          created_at: ''
-        },
+        relevance_score: finalScore,
+        key_highlight: keyHighlight,
+        content_summary: summary,
+        chunk_id: result.chunk_id,
+        document_title: documentTitle,
         entities: chunkEntities,
         vector_similarity: vectorSimilarity,
-        graph_boost: graphBoost,
-        hybrid_score: hybridScore,
-        distance: result.distance
+        graph_boost: useGraph ? graphBoost : undefined,
+        full_context_available: true
       });
     }
     
-    return enhancedResults
-      .sort((a, b) => b.hybrid_score - a.hybrid_score)
+    // Sort by relevance and return top results
+    const finalResults = enhancedResults
+      .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, limit);
+    
+    console.error(`✅ Enhanced search completed: ${finalResults.length} results with semantic summaries`);
+    
+    return finalResults;
+  }
+
+  // NEW: Get detailed context for a specific chunk
+  async getDetailedContext(chunkId: string, includeSurrounding = true): Promise<DetailedContext> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    console.error(`📖 Getting detailed context for chunk: ${chunkId}`);
+    
+    // Get the main chunk
+    const chunk = this.db.prepare(`
+      SELECT 
+        m.chunk_id,
+        m.document_id,
+        m.chunk_index,
+        m.text,
+        d.content as doc_content,
+        d.metadata as doc_metadata
+      FROM chunk_metadata m
+      JOIN documents d ON m.document_id = d.id
+      WHERE m.chunk_id = ?
+    `).get(chunkId) as {
+      chunk_id: string;
+      document_id: string;
+      chunk_index: number;
+      text: string;
+      doc_content: string;
+      doc_metadata: string;
+    } | undefined;
+    
+    if (!chunk) {
+      throw new Error(`Chunk with ID ${chunkId} not found`);
+    }
+    
+    // Get entities for this chunk
+    const entities = this.db.prepare(`
+      SELECT e.name 
+      FROM chunk_entities ce
+      JOIN chunk_metadata m ON ce.chunk_rowid = m.rowid
+      JOIN entities e ON e.id = ce.entity_id
+      WHERE m.chunk_id = ?
+    `).all(chunkId).map((row: any) => row.name);
+    
+    let surroundingChunks: Array<{ chunk_id: string; text: string; position: 'before' | 'after' }> = [];
+    
+    if (includeSurrounding) {
+      // Get preceding and following chunks from the same document
+      const beforeChunk = this.db.prepare(`
+        SELECT chunk_id, text
+        FROM chunk_metadata
+        WHERE document_id = ? AND chunk_index = ?
+      `).get(chunk.document_id, chunk.chunk_index - 1) as { chunk_id: string; text: string } | undefined;
+      
+      const afterChunk = this.db.prepare(`
+        SELECT chunk_id, text
+        FROM chunk_metadata
+        WHERE document_id = ? AND chunk_index = ?
+      `).get(chunk.document_id, chunk.chunk_index + 1) as { chunk_id: string; text: string } | undefined;
+      
+      if (beforeChunk) {
+        surroundingChunks.push({
+          chunk_id: beforeChunk.chunk_id,
+          text: beforeChunk.text,
+          position: 'before'
+        });
+      }
+      
+      if (afterChunk) {
+        surroundingChunks.push({
+          chunk_id: afterChunk.chunk_id,
+          text: afterChunk.text,
+          position: 'after'
+        });
+      }
+    }
+    
+    const metadata = JSON.parse(chunk.doc_metadata);
+    const documentTitle = metadata.title || metadata.name || chunk.document_id;
+    
+    console.error(`✅ Retrieved detailed context with ${surroundingChunks.length} surrounding chunks`);
+    
+    return {
+      chunk_id: chunk.chunk_id,
+      document_id: chunk.document_id,
+      full_text: chunk.text,
+      document_title: documentTitle,
+      surrounding_chunks: surroundingChunks.length > 0 ? surroundingChunks : undefined,
+      entities: entities,
+      metadata: metadata
+    };
   }
 
   async getKnowledgeGraphStats(): Promise<any> {
@@ -1559,6 +1818,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const limit = typeof (validatedArgs as any).limit === 'number' ? (validatedArgs as any).limit : 5;
         const useGraph = (validatedArgs as any).useGraph !== false;
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.hybridSearch((validatedArgs as any).query as string, limit, useGraph), null, 2) }] };
+      case "getDetailedContext":
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.getDetailedContext((validatedArgs as any).chunkId as string, (validatedArgs as any).includeSurrounding !== false), null, 2) }] };
       case "getKnowledgeGraphStats":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.getKnowledgeGraphStats(), null, 2) }] };
       case "deleteDocuments":
