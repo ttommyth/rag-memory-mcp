@@ -17,9 +17,7 @@ import { pipeline, env } from '@huggingface/transformers';
 // Import our new structured tool system
 import { getAllMCPTools, validateToolArgs, getSystemInfo } from './src/tools/tool-registry.js';
 
-// Configure Hugging Face transformers for local-only operation
-env.allowRemoteModels = false;
-env.allowLocalModels = true;
+// Configure Hugging Face transformers for better compatibility
 if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = './node_modules/@huggingface/transformers/dist/';
 }
@@ -141,6 +139,10 @@ class RAGKnowledgeGraphManager {
   private async initializeEmbeddingModel() {
     try {
       console.error('🤖 Loading sentence transformer model: all-MiniLM-L12-v2...');
+      
+      // Configure environment to allow remote model downloads
+      env.allowRemoteModels = true;
+      env.allowLocalModels = true;
       
       this.embeddingModel = await pipeline(
         'feature-extraction',
