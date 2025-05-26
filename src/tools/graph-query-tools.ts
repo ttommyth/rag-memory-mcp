@@ -99,7 +99,7 @@ Uses semantic embeddings to find conceptually similar entities, even without exa
 
 <importantNotes>
 - (!important!) **Semantic vector search** - finds conceptually similar entities, not just keyword matches
-- (!important!) **Requires entity embeddings** - run embedAllEntities first for existing entities
+- (!important!) **Requires entity embeddings** - entities are automatically embedded when created
 - (!important!) **Returns similarity scores** with matching entities and their relationships
 - (!important!) More intelligent than traditional pattern matching - understands context and meaning
 </importantNotes>
@@ -126,7 +126,7 @@ Uses semantic embeddings to find conceptually similar entities, even without exa
 - Use natural language descriptions rather than exact keywords
 - Try conceptual queries like "artificial intelligence frameworks" or "database technologies"
 - Start with broader queries, then refine based on similarity scores
-- Ensure entities have embeddings (use embedAllEntities for existing entities)
+- Entities are automatically embedded when created
 - Review similarity scores to understand conceptual relevance
 - Combine with openNodes for detailed analysis of interesting findings
 </bestPractices>

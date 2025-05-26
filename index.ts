@@ -2043,10 +2043,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // New RAG tools
       case "storeDocument":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.storeDocument((validatedArgs as any).id as string, (validatedArgs as any).content as string, (validatedArgs as any).metadata || {}), null, 2) }] };
-      case "chunkDocument":
-        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.chunkDocument((validatedArgs as any).documentId as string, { maxTokens: (validatedArgs as any).maxTokens, overlap: (validatedArgs as any).overlap }), null, 2) }] };
-      case "embedChunks":
-        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.embedChunks((validatedArgs as any).documentId as string), null, 2) }] };
+      // chunkDocument and embedChunks are now handled automatically by storeDocument
       case "extractTerms":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.extractTerms((validatedArgs as any).documentId as string, { minLength: (validatedArgs as any).minLength, includeCapitalized: (validatedArgs as any).includeCapitalized, customPatterns: (validatedArgs as any).customPatterns }), null, 2) }] };
       case "linkEntitiesToDocument":
@@ -2064,9 +2061,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "listDocuments":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.listDocuments((validatedArgs as any).includeMetadata !== false), null, 2) }] };
       
-      // NEW: Entity embedding tools
-      case "embedAllEntities":
-        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.embedAllEntities(), null, 2) }] };
+      // embedAllEntities removed - entities are now automatically embedded when created
       
       // NEW: Migration tools
       case "getMigrationStatus":

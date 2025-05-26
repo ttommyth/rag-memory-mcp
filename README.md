@@ -26,9 +26,7 @@ An advanced MCP server for **RAG-enabled memory** through a knowledge graph with
 This server provides comprehensive memory management through the Model Context Protocol (MCP):
 
 ### 📚 Document Management
-- `storeDocument`: Store documents with metadata for processing
-- `chunkDocument`: Create text chunks with configurable parameters
-- `embedChunks`: Generate vector embeddings for semantic search
+- `storeDocument`: Store documents with automatic chunking and embedding generation
 - `extractTerms`: Extract potential entity terms from documents
 - `linkEntitiesToDocument`: Create explicit entity-document associations
 - `deleteDocuments`: Remove documents and associated data
@@ -165,10 +163,10 @@ Observations are discrete pieces of information about entities:
 - Should be atomic (one fact per observation)
 
 ### Documents & Vector Search
-Documents are processed through:
+Documents are automatically processed through:
 1. **Storage**: Raw text with metadata
-2. **Chunking**: Split into manageable pieces
-3. **Embedding**: Convert to vector representations
+2. **Chunking**: Automatically split into manageable pieces
+3. **Embedding**: Automatically convert to vector representations
 4. **Linking**: Associate with relevant entities
 
 This enables **hybrid search** that combines:
@@ -221,18 +219,14 @@ npm run watch  # For development with auto-rebuild
 Here's a typical workflow for building and querying a knowledge base:
 
 ```javascript
-// 1. Store a document
+// 1. Store a document (automatically chunked and embedded)
 await storeDocument({
   id: "ml_intro",
   content: "Machine learning is a subset of AI...",
   metadata: { type: "educational", topic: "ML" }
 });
 
-// 2. Process the document
-await chunkDocument({ documentId: "ml_intro" });
-await embedChunks({ documentId: "ml_intro" });
-
-// 3. Extract and create entities
+// 2. Extract and create entities
 const terms = await extractTerms({ documentId: "ml_intro" });
 await createEntities({
   entities: [
@@ -244,7 +238,7 @@ await createEntities({
   ]
 });
 
-// 4. Search with hybrid approach
+// 3. Search with hybrid approach
 const results = await hybridSearch({
   query: "artificial intelligence applications",
   limit: 10,
@@ -275,8 +269,8 @@ You have access to a RAG-enabled memory system with knowledge graph capabilities
    - Use statistics to monitor knowledge base growth
 
 4. **Processing Workflow**:
-   - Store → Chunk → Embed → Extract → Link
-   - Always process documents completely for best search results
+   - Store (automatic chunking & embedding) → Extract → Link
+   - Documents are automatically processed for optimal search results
 ```
 
 ## Contributing

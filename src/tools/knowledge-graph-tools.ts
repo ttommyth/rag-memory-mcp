@@ -24,6 +24,7 @@ const createEntitiesDescription: ToolRegistrationDescription = () => `<descripti
 Create multiple new entities in the knowledge graph with comprehensive metadata and observations.
 **Essential for building the foundational structure of your knowledge representation.**
 Use this tool to add new concepts, people, places, or any identifiable objects to your graph.
+**Automatically generates vector embeddings** for semantic search capabilities.
 </description>
 
 <importantNotes>
@@ -31,6 +32,7 @@ Use this tool to add new concepts, people, places, or any identifiable objects t
 - (!important!) EntityType helps categorize and filter entities (e.g., PERSON, CONCEPT, PLACE, TECHNOLOGY)
 - (!important!) Observations provide context and evidence for the entity's existence or properties
 - (!important!) **Avoid duplicate entities** - check if similar entities exist first using search_nodes
+- (!important!) **Vector embeddings are automatically generated** for semantic search
 </importantNotes>
 
 <whenToUseThisTool>
@@ -49,6 +51,7 @@ Use this tool to add new concepts, people, places, or any identifiable objects t
 - Rich observation arrays for evidence and context
 - Automatic deduplication (existing entities are ignored)
 - Metadata support for extensible entity properties
+- **Automatic vector embedding generation** for semantic search
 </features>
 
 <bestPractices>
@@ -349,75 +352,7 @@ export const hybridSearchTool: ToolDefinition = {
   schema: hybridSearchSchema,
 };
 
-// === EMBED ALL ENTITIES TOOL ===
-
-const embedAllEntitiesCapability: ToolCapabilityInfo = {
-  description: 'Generate semantic embeddings for all entities in the knowledge graph to enable vector search',
-  parameters: {
-    type: 'object',
-    properties: {},
-    required: [],
-  },
-};
-
-const embedAllEntitiesDescription: ToolRegistrationDescription = () => `<description>
-Generate semantic vector embeddings for all entities in the knowledge graph to enable semantic search.
-**Essential for upgrading your knowledge graph to use semantic vector search instead of pattern matching.**
-This tool creates embeddings from entity names, types, and observations for powerful semantic discovery.
-</description>
-
-<importantNotes>
-- (!important!) **Processes all entities** in the knowledge graph at once
-- (!important!) **Enables semantic search** - required for vector-based entity discovery
-- (!important!) **Replaces pattern matching** with intelligent similarity search
-- (!important!) **Automatic for new entities** - only needed once for existing entities
-</importantNotes>
-
-<whenToUseThisTool>
-- **After importing existing entities** that don't have embeddings yet
-- When upgrading from pattern-based to semantic search
-- When entities have been created without automatic embedding generation
-- After significant updates to entity observations that require re-embedding
-- When setting up semantic search capabilities for the first time
-</whenToUseThisTool>
-
-<features>
-- Batch processing of all entities in the knowledge graph
-- Generates embeddings from entity names, types, and observations
-- Creates searchable vector representations using sentence transformers
-- Enables semantic similarity search across all entities
-- Automatic handling of embedding generation and storage
-- Progress reporting for large entity collections
-</features>
-
-<bestPractices>
-- Run once after importing entities from other systems
-- Use when transitioning from pattern-based to semantic search
-- Monitor progress output for large knowledge graphs
-- Ensure embedding model is properly initialized before running
-- Consider running after major entity data updates
-- Use as a one-time setup tool for existing knowledge graphs
-</bestPractices>
-
-<parameters>
-- No parameters required - processes all entities automatically
-</parameters>
-
-<examples>
-- Initial setup: {} (no parameters needed)
-- After import: {} (processes all existing entities)
-- Post-migration: {} (enables semantic search for imported data)
-</examples>`;
-
-const embedAllEntitiesSchema: z.ZodRawShape = {
-  // No parameters needed
-};
-
-export const embedAllEntitiesTool: ToolDefinition = {
-  capability: embedAllEntitiesCapability,
-  description: embedAllEntitiesDescription,
-  schema: embedAllEntitiesSchema,
-};
+// embedAllEntities tool removed - entities are now automatically embedded when created
 
 // === GET DETAILED CONTEXT TOOL ===
 
@@ -508,6 +443,6 @@ export const knowledgeGraphTools = {
   createRelations: createRelationsTool,
   addObservations: addObservationsTool,
   hybridSearch: hybridSearchTool,
-  embedAllEntities: embedAllEntitiesTool,
+  // embedAllEntities removed - entities are now automatically embedded when created
   getDetailedContext: getDetailedContextTool,
 }; 

@@ -4,7 +4,7 @@ import { ToolDefinition, ToolCapabilityInfo, ToolRegistrationDescription } from 
 // === STORE DOCUMENT TOOL ===
 
 const storeDocumentCapability: ToolCapabilityInfo = {
-  description: 'Store a document in the system without automatic processing',
+  description: 'Store a document with automatic chunking and embedding generation',
   parameters: {
     type: 'object',
     properties: {
@@ -21,64 +21,6 @@ const storeDocumentCapability: ToolCapabilityInfo = {
         description: 'Additional metadata for the document (optional)',
         additionalProperties: true,
         optional: true
-      }
-    },
-    required: ['id', 'content'],
-  },
-};
-
-const storeDocumentDescription: ToolRegistrationDescription = () => `<description>
-Store a document in the system for later processing. **Simple document storage without automatic extraction.**
-AI agents can then choose which processing steps to apply using other tools.
-</description>
-
-<importantNotes>
-- (!important!) **Document ID must be unique** - existing documents with same ID will be replaced
-- (!important!) **No automatic processing** - just stores the document text and metadata
-- (!important!) **AI agents control processing** - use other tools for chunking, embedding, extraction
-</importantNotes>
-
-<whenToUseThisTool>
-- When you want to store documents for later processing
-- **Before applying specific processing steps** like chunking or extraction
-- When you need custom document processing workflows
-- When storing documents of different types that need different handling
-</whenToUseThisTool>
-
-<bestPractices>
-- Use descriptive document IDs that indicate source or content type
-- Include relevant metadata (author, date, source, domain, etc.)
-- Consider document preprocessing before storage
-- Use this as the first step in custom processing workflows
-</bestPractices>
-
-<examples>
-- Research paper: {"id": "einstein_1905_relativity", "content": "On the Electrodynamics of Moving Bodies...", "metadata": {"author": "Albert Einstein", "year": 1905, "type": "scientific_paper"}}
-- Business doc: {"id": "quarterly_report_q3", "content": "Q3 2024 Performance Summary...", "metadata": {"type": "financial", "quarter": "Q3", "year": 2024}}
-</examples>`;
-
-const storeDocumentSchema: z.ZodRawShape = {
-  id: z.string().describe('Unique identifier for the document'),
-  content: z.string().describe('The full text content of the document'),
-  metadata: z.record(z.any()).optional().describe('Additional metadata for the document'),
-};
-
-export const storeDocumentTool: ToolDefinition = {
-  capability: storeDocumentCapability,
-  description: storeDocumentDescription,
-  schema: storeDocumentSchema,
-};
-
-// === CHUNK DOCUMENT TOOL ===
-
-const chunkDocumentCapability: ToolCapabilityInfo = {
-  description: 'Create text chunks from a stored document with configurable options',
-  parameters: {
-    type: 'object',
-    properties: {
-      documentId: {
-        type: 'string',
-        description: 'ID of the stored document to chunk'
       },
       maxTokens: {
         type: 'number',
@@ -91,108 +33,58 @@ const chunkDocumentCapability: ToolCapabilityInfo = {
         optional: true
       }
     },
-    required: ['documentId'],
+    required: ['id', 'content'],
   },
 };
 
-const chunkDocumentDescription: ToolRegistrationDescription = () => `<description>
-Create text chunks from a stored document with configurable chunking parameters.
-**Gives AI agents control over how documents are segmented for processing.**
+const storeDocumentDescription: ToolRegistrationDescription = () => `<description>
+Store a document in the system with **automatic chunking and vector embedding generation**.
+**Complete document processing in a single step** - ready for semantic search immediately.
+Automatically chunks the document and generates vector embeddings for optimal retrieval.
 </description>
 
 <importantNotes>
-- (!important!) **Document must be stored first** using storeDocument
-- (!important!) **Configurable chunking** - adjust maxTokens and overlap as needed
-- (!important!) **Replaces existing chunks** for the document if any exist
+- (!important!) **Document ID must be unique** - existing documents with same ID will be replaced
+- (!important!) **Automatic processing** - chunks and embeds the document automatically
+- (!important!) **Ready for search immediately** - no additional steps required
+- (!important!) **Configurable chunking** - uses optimal defaults but can be customized
 </importantNotes>
 
 <whenToUseThisTool>
-- After storing a document with storeDocument
-- When you need specific chunk sizes for different document types
-- **Before embedding chunks** for vector search
-- When optimizing chunk size for your use case
+- When you want to store documents and make them immediately searchable
+- **Primary tool for document ingestion** - handles all processing automatically
+- When building a searchable knowledge base from documents
+- When you need documents ready for hybrid search capabilities
 </whenToUseThisTool>
 
 <bestPractices>
-- Smaller chunks (100-150 tokens) for precise retrieval
-- Larger chunks (300-500 tokens) for context preservation
-- Use overlap (10-30 tokens) to maintain continuity
-- Consider document type when choosing chunk size
+- Use descriptive document IDs that indicate source or content type
+- Include relevant metadata (author, date, source, domain, etc.)
+- Consider document preprocessing before storage if needed
+- Use this as the primary document ingestion tool
 </bestPractices>
 
 <examples>
-- Default chunking: {"documentId": "doc1"}
-- Custom size: {"documentId": "doc1", "maxTokens": 150, "overlap": 30}
-- Large context: {"documentId": "legal_doc", "maxTokens": 400, "overlap": 50}
+- Research paper: {"id": "einstein_1905_relativity", "content": "On the Electrodynamics of Moving Bodies...", "metadata": {"author": "Albert Einstein", "year": 1905, "type": "scientific_paper"}}
+- Business doc: {"id": "quarterly_report_q3", "content": "Q3 2024 Performance Summary...", "metadata": {"type": "financial", "quarter": "Q3", "year": 2024}}
+- Custom chunking: {"id": "technical_manual", "content": "Technical documentation...", "maxTokens": 300, "overlap": 30, "metadata": {"type": "manual"}}
 </examples>`;
 
-const chunkDocumentSchema: z.ZodRawShape = {
-  documentId: z.string().describe('ID of the stored document to chunk'),
+const storeDocumentSchema: z.ZodRawShape = {
+  id: z.string().describe('Unique identifier for the document'),
+  content: z.string().describe('The full text content of the document'),
+  metadata: z.record(z.any()).optional().describe('Additional metadata for the document'),
   maxTokens: z.number().default(200).optional().describe('Maximum tokens per chunk'),
-  overlap: z.number().default(20).optional().describe('Number of overlapping tokens'),
+  overlap: z.number().default(20).optional().describe('Number of overlapping tokens between chunks'),
 };
 
-export const chunkDocumentTool: ToolDefinition = {
-  capability: chunkDocumentCapability,
-  description: chunkDocumentDescription,
-  schema: chunkDocumentSchema,
+export const storeDocumentTool: ToolDefinition = {
+  capability: storeDocumentCapability,
+  description: storeDocumentDescription,
+  schema: storeDocumentSchema,
 };
 
-// === EMBED CHUNKS TOOL ===
-
-const embedChunksCapability: ToolCapabilityInfo = {
-  description: 'Generate vector embeddings for document chunks',
-  parameters: {
-    type: 'object',
-    properties: {
-      documentId: {
-        type: 'string',
-        description: 'ID of the document whose chunks to embed'
-      }
-    },
-    required: ['documentId'],
-  },
-};
-
-const embedChunksDescription: ToolRegistrationDescription = () => `<description>
-Generate vector embeddings for all chunks of a document to enable semantic search.
-**Required for vector similarity search and hybrid search capabilities.**
-</description>
-
-<importantNotes>
-- (!important!) **Document must be chunked first** using chunkDocument
-- (!important!) **Generates embeddings** using sentence transformer model
-- (!important!) **Enables vector search** - required for hybridSearch functionality
-</importantNotes>
-
-<whenToUseThisTool>
-- After chunking a document with chunkDocument
-- **Before performing vector searches** on the document
-- When building a searchable knowledge base
-- When enabling semantic similarity matching
-</whenToUseThisTool>
-
-<bestPractices>
-- Embed chunks after finalizing chunk parameters
-- Monitor embedding quality with test searches
-- Re-embed if changing to a different embedding model
-- Consider computational cost for large document sets
-</bestPractices>
-
-<examples>
-- Embed all chunks: {"documentId": "research_paper_1"}
-- After chunking: {"documentId": "technical_manual"}
-</examples>`;
-
-const embedChunksSchema: z.ZodRawShape = {
-  documentId: z.string().describe('ID of the document whose chunks to embed'),
-};
-
-export const embedChunksTool: ToolDefinition = {
-  capability: embedChunksCapability,
-  description: embedChunksDescription,
-  schema: embedChunksSchema,
-};
+// chunkDocument and embedChunks tools removed - functionality is now automatic in storeDocument
 
 // === EXTRACT TERMS TOOL ===
 
@@ -555,8 +447,7 @@ export const listDocumentsTool: ToolDefinition = {
 // Export all RAG tools
 export const ragTools = {
   storeDocument: storeDocumentTool,
-  chunkDocument: chunkDocumentTool,
-  embedChunks: embedChunksTool,
+  // chunkDocument and embedChunks are now handled automatically by storeDocument
   extractTerms: extractTermsTool,
   linkEntitiesToDocument: linkEntitiesToDocumentTool,
   getKnowledgeGraphStats: getKnowledgeGraphStatsTool,
