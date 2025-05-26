@@ -17,6 +17,10 @@ import { pipeline, env } from '@huggingface/transformers';
 // Import our new structured tool system
 import { getAllMCPTools, validateToolArgs, getSystemInfo } from './src/tools/tool-registry.js';
 
+// Import migration system
+import { MigrationManager } from './src/migrations/migration-manager.js';
+import { migrations } from './src/migrations/migrations.js';
+
 // Configure Hugging Face transformers for better compatibility
 if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = './node_modules/@huggingface/transformers/dist/';
@@ -66,6 +70,16 @@ interface Chunk {
   embedding?: Float32Array;
 }
 
+// NEW: Enhanced chunk types to support knowledge graph chunks
+interface KnowledgeGraphChunk {
+  id: string;
+  type: 'entity' | 'relationship';
+  entity_id?: string;
+  relationship_id?: string;
+  text: string;
+  metadata: Record<string, any>;
+}
+
 interface SearchResult {
   chunk: Chunk;
   document: Document;
@@ -87,6 +101,8 @@ interface EnhancedSearchResult {
   vector_similarity: number;
   graph_boost?: number;
   full_context_available: boolean;
+  chunk_type: 'document' | 'entity' | 'relationship'; // NEW: Indicates the source type
+  source_id?: string; // NEW: ID of the source entity/relationship if applicable
 }
 
 // NEW: Interface for detailed context retrieval
@@ -126,8 +142,8 @@ class RAGKnowledgeGraphManager {
     // Initialize embedding model
     await this.initializeEmbeddingModel();
     
-    // Create tables
-    await this.createTables();
+    // Run database migrations
+    await this.runMigrations();
     
     console.error('✅ RAG-enabled knowledge graph initialized');
     
@@ -162,112 +178,35 @@ class RAGKnowledgeGraphManager {
     }
   }
 
-  private async createTables() {
+  async runMigrations(): Promise<{ applied: number; currentVersion: number; appliedMigrations: Array<{ version: number; description: string }> }> {
     if (!this.db) throw new Error('Database not initialized');
 
-    // Disable foreign key enforcement to make deletions easier
-    this.db.pragma('foreign_keys = OFF');
-
-    // Original entities table (enhanced)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS entities (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        entityType TEXT DEFAULT 'CONCEPT',
-        observations TEXT DEFAULT '[]',
-        mentions INTEGER DEFAULT 0,
-        metadata TEXT DEFAULT '{}',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Original relationships table (enhanced) - FK constraints kept for reference but not enforced
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS relationships (
-        id TEXT PRIMARY KEY,
-        source_entity TEXT NOT NULL,
-        target_entity TEXT NOT NULL,
-        relationType TEXT NOT NULL,
-        confidence REAL DEFAULT 1.0,
-        metadata TEXT DEFAULT '{}',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (source_entity) REFERENCES entities(id) ON DELETE CASCADE,
-        FOREIGN KEY (target_entity) REFERENCES entities(id) ON DELETE CASCADE
-      )
-    `);
-
-    // Documents table for RAG
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS documents (
-        id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        metadata TEXT DEFAULT '{}',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Vector embeddings using sqlite-vec for document chunks
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING vec0(
-        embedding FLOAT[384]
-      )
-    `);
-
-    // NEW: Vector embeddings for entities using sqlite-vec
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
-        embedding FLOAT[384]
-      )
-    `);
-
-    // Chunk metadata
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS chunk_metadata (
-        rowid INTEGER PRIMARY KEY,
-        chunk_id TEXT UNIQUE,
-        document_id TEXT,
-        chunk_index INTEGER,
-        text TEXT,
-        start_pos INTEGER,
-        end_pos INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-      )
-    `);
-
-    // NEW: Entity embedding metadata
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS entity_embedding_metadata (
-        rowid INTEGER PRIMARY KEY,
-        entity_id TEXT UNIQUE,
-        embedding_text TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
-      )
-    `);
-
-    // Chunk-Entity associations
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS chunk_entities (
-        chunk_rowid INTEGER NOT NULL,
-        entity_id TEXT NOT NULL,
-        PRIMARY KEY (chunk_rowid, entity_id),
-        FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
-        FOREIGN KEY (chunk_rowid) REFERENCES chunk_metadata(rowid) ON DELETE CASCADE
-      )
-    `);
-
-    // Create indexes
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
-      CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_entity);
-      CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity);
-      CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id);
-      CREATE INDEX IF NOT EXISTS idx_chunk_metadata_document ON chunk_metadata(document_id);
-      CREATE INDEX IF NOT EXISTS idx_entity_embedding_metadata_entity ON entity_embedding_metadata(entity_id);
-    `);
-
-    console.error('🔧 Database tables created with entity vector support for semantic search');
+    console.error('🔄 Running database migrations...');
+    
+    // Initialize migration manager
+    const migrationManager = new MigrationManager(this.db);
+    
+    // Add all migrations
+    migrations.forEach(migration => {
+      migrationManager.addMigration(migration);
+    });
+    
+    // Get pending migrations before running them
+    const pendingBefore = migrationManager.getPendingMigrations();
+    
+    // Run pending migrations
+    const result = await migrationManager.runMigrations();
+    
+    console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
+    
+    return {
+      applied: result.applied,
+      currentVersion: result.currentVersion,
+      appliedMigrations: pendingBefore.slice(0, result.applied).map(m => ({
+        version: m.version,
+        description: m.description
+      }))
+    };
   }
 
   cleanup() {
@@ -862,6 +801,179 @@ class RAGKnowledgeGraphManager {
       totalEntities: entities.length,
       embeddedEntities: embeddedCount
     };
+  }
+
+  // NEW: Generate knowledge graph chunks for entities and relationships
+  async generateKnowledgeGraphChunks(): Promise<{ entityChunks: number; relationshipChunks: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    console.error('🧠 Generating knowledge graph chunks...');
+    
+    // Clean up existing knowledge graph chunks
+    await this.cleanupKnowledgeGraphChunks();
+    
+    let entityChunks = 0;
+    let relationshipChunks = 0;
+    
+    // Generate entity chunks
+    const entities = this.db.prepare(`
+      SELECT id, name, entityType, observations FROM entities
+    `).all() as Array<{ id: string; name: string; entityType: string; observations: string }>;
+    
+    for (const entity of entities) {
+      const observations = JSON.parse(entity.observations);
+      const chunkText = this.generateEntityChunkText(entity.name, entity.entityType, observations);
+      const chunkId = `kg_entity_${entity.id}`;
+      
+      // Store chunk metadata
+      this.db.prepare(`
+        INSERT INTO chunk_metadata (
+          chunk_id, chunk_type, entity_id, chunk_index, text, start_pos, end_pos, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(chunkId, 'entity', entity.id, 0, chunkText, 0, chunkText.length, JSON.stringify({
+        entity_name: entity.name,
+        entity_type: entity.entityType
+      }));
+      
+      entityChunks++;
+    }
+    
+    // Generate relationship chunks
+    const relationships = this.db.prepare(`
+      SELECT 
+        r.id,
+        r.relationType,
+        e1.name as source_name,
+        e2.name as target_name,
+        r.confidence
+      FROM relationships r
+      JOIN entities e1 ON r.source_entity = e1.id
+      JOIN entities e2 ON r.target_entity = e2.id
+    `).all() as Array<{ 
+      id: string; 
+      relationType: string; 
+      source_name: string; 
+      target_name: string; 
+      confidence: number;
+    }>;
+    
+    for (const rel of relationships) {
+      const chunkText = this.generateRelationshipChunkText(rel.source_name, rel.target_name, rel.relationType);
+      const chunkId = `kg_relationship_${rel.id}`;
+      
+      // Store chunk metadata
+      this.db.prepare(`
+        INSERT INTO chunk_metadata (
+          chunk_id, chunk_type, relationship_id, chunk_index, text, start_pos, end_pos, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(chunkId, 'relationship', rel.id, 0, chunkText, 0, chunkText.length, JSON.stringify({
+        source_entity: rel.source_name,
+        target_entity: rel.target_name,
+        relation_type: rel.relationType,
+        confidence: rel.confidence
+      }));
+      
+      relationshipChunks++;
+    }
+    
+    console.error(`✅ Knowledge graph chunks generated: ${entityChunks} entities, ${relationshipChunks} relationships`);
+    
+    return { entityChunks, relationshipChunks };
+  }
+
+  // NEW: Embed knowledge graph chunks
+  async embedKnowledgeGraphChunks(): Promise<{ embeddedChunks: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    console.error('🔮 Embedding knowledge graph chunks...');
+    
+    // Get all knowledge graph chunks
+    const chunks = this.db.prepare(`
+      SELECT rowid, chunk_id, text 
+      FROM chunk_metadata 
+      WHERE chunk_type IN ('entity', 'relationship')
+    `).all() as Array<{ rowid: number; chunk_id: string; text: string }>;
+    
+    let embeddedCount = 0;
+    
+    for (const chunk of chunks) {
+      // Generate embedding
+      const embedding = await this.generateEmbedding(chunk.text);
+      
+      try {
+        // Delete existing embedding if any
+        this.db.prepare(`DELETE FROM chunks WHERE rowid = ?`).run(chunk.rowid);
+        
+        // Insert new embedding
+        const result = this.db.prepare(`
+          INSERT INTO chunks (embedding) VALUES (?)
+        `).run(Buffer.from(embedding.buffer));
+        
+        if (result.changes > 0) {
+          embeddedCount++;
+        }
+      } catch (error) {
+        console.error(`Failed to embed knowledge graph chunk ${chunk.chunk_id}:`, error);
+      }
+    }
+    
+    console.error(`✅ Knowledge graph chunks embedded: ${embeddedCount} embeddings created`);
+    
+    return { embeddedChunks: embeddedCount };
+  }
+
+  // NEW: Generate textual representation for entity chunks
+  private generateEntityChunkText(name: string, entityType: string, observations: string[]): string {
+    const observationsText = observations.length > 0 ? observations.join('. ') : 'No additional information available.';
+    return `${name} is a ${entityType}. ${observationsText}`;
+  }
+
+  // NEW: Generate textual representation for relationship chunks  
+  private generateRelationshipChunkText(sourceName: string, targetName: string, relationType: string): string {
+    // Convert relation type to more natural language
+    const relationText = relationType.toLowerCase().replace(/_/g, ' ');
+    return `${sourceName} ${relationText} ${targetName}`;
+  }
+
+  // NEW: Clean up existing knowledge graph chunks
+  private async cleanupKnowledgeGraphChunks(): Promise<void> {
+    if (!this.db) return;
+    
+    console.error('🧹 Cleaning up existing knowledge graph chunks...');
+    
+    // Get existing knowledge graph chunks
+    const existingChunks = this.db.prepare(`
+      SELECT rowid FROM chunk_metadata WHERE chunk_type IN ('entity', 'relationship')
+    `).all() as { rowid: number }[];
+    
+    let deletedVectors = 0;
+    let deletedAssociations = 0;
+    
+    // Delete vectors and associations
+    for (const chunk of existingChunks) {
+      // Delete vector embeddings
+      const vectors = this.db.prepare(`
+        DELETE FROM chunks WHERE rowid = ?
+      `).run(chunk.rowid);
+      deletedVectors += vectors.changes;
+      
+      // Delete chunk-entity associations
+      const associations = this.db.prepare(`
+        DELETE FROM chunk_entities WHERE chunk_rowid = ?
+      `).run(chunk.rowid);
+      deletedAssociations += associations.changes;
+    }
+    
+    // Delete chunk metadata
+    const metadata = this.db.prepare(`
+      DELETE FROM chunk_metadata WHERE chunk_type IN ('entity', 'relationship')
+    `).run();
+    
+    if (existingChunks.length > 0) {
+      console.error(`  ├─ Deleted ${deletedVectors} vector embeddings`);
+      console.error(`  ├─ Deleted ${deletedAssociations} entity associations`);
+      console.error(`  └─ Deleted ${metadata.changes} chunk metadata records`);
+    }
   }
 
   // Simple configurable term extraction (replacing hardcoded patterns)
@@ -1501,32 +1613,40 @@ class RAGKnowledgeGraphManager {
     // Generate query embedding
     const queryEmbedding = await this.generateEmbedding(query);
     
-    // Vector search (get more results to allow for better selection)
+    // Enhanced vector search across ALL chunk types (documents, entities, relationships)
     const vectorResults = this.db.prepare(`
       SELECT 
         c.rowid,
         m.chunk_id,
+        m.chunk_type,
         m.document_id,
+        m.entity_id,
+        m.relationship_id,
         m.chunk_index,
         m.text,
         m.start_pos,
         m.end_pos,
+        m.metadata as chunk_metadata,
         c.distance,
-        d.metadata as doc_metadata
+        COALESCE(d.metadata, '{}') as doc_metadata
       FROM chunks c
       JOIN chunk_metadata m ON c.rowid = m.rowid
-      JOIN documents d ON m.document_id = d.id
+      LEFT JOIN documents d ON m.document_id = d.id
       WHERE c.embedding MATCH ?
         AND k = ?
       ORDER BY c.distance
-    `).all(Buffer.from(queryEmbedding.buffer), limit * 2) as Array<{
+    `).all(Buffer.from(queryEmbedding.buffer), limit * 3) as Array<{
       rowid: number;
       chunk_id: string;
-      document_id: string;
+      chunk_type: string;
+      document_id: string | null;
+      entity_id: string | null;
+      relationship_id: string | null;
       chunk_index: number;
       text: string;
       start_pos: number;
       end_pos: number;
+      chunk_metadata: string;
       distance: number;
       doc_metadata: string;
     }>;
@@ -1562,24 +1682,56 @@ class RAGKnowledgeGraphManager {
     const enhancedResults: EnhancedSearchResult[] = [];
     
     for (const result of vectorResults) {
-      // Get entities associated with this chunk
-      const chunkEntities = this.db.prepare(`
-        SELECT e.name 
-        FROM chunk_entities ce
-        JOIN entities e ON e.id = ce.entity_id
-        WHERE ce.chunk_rowid = ?
-      `).all(result.rowid).map((row: any) => row.name);
+      // Get entities associated with this chunk (for document chunks)
+      let chunkEntities: string[] = [];
+      if (result.chunk_type === 'document') {
+        chunkEntities = this.db.prepare(`
+          SELECT e.name 
+          FROM chunk_entities ce
+          JOIN entities e ON e.id = ce.entity_id
+          WHERE ce.chunk_rowid = ?
+        `).all(result.rowid).map((row: any) => row.name);
+      } else if (result.chunk_type === 'entity' && result.entity_id) {
+        // For entity chunks, get the entity name
+        const entity = this.db.prepare(`
+          SELECT name FROM entities WHERE id = ?
+        `).get(result.entity_id) as { name: string } | undefined;
+        if (entity) {
+          chunkEntities = [entity.name];
+        }
+      } else if (result.chunk_type === 'relationship' && result.relationship_id) {
+        // For relationship chunks, get both entities
+        const relEntities = this.db.prepare(`
+          SELECT e1.name as source_name, e2.name as target_name
+          FROM relationships r
+          JOIN entities e1 ON r.source_entity = e1.id
+          JOIN entities e2 ON r.target_entity = e2.id
+          WHERE r.id = ?
+        `).get(result.relationship_id) as { source_name: string; target_name: string } | undefined;
+        if (relEntities) {
+          chunkEntities = [relEntities.source_name, relEntities.target_name];
+        }
+      }
       
-      // Calculate graph boost if using graph enhancement
+      // Enhanced graph boost calculation
       let graphBoost = 0;
       if (useGraph) {
         const queryEntities = this.extractTermsFromText(query);
+        
+        // Base boost for knowledge graph chunks
+        if (result.chunk_type === 'entity') {
+          graphBoost += 0.15; // Entities are inherently valuable
+        } else if (result.chunk_type === 'relationship') {
+          graphBoost += 0.25; // Relationships show connections
+        }
+        
+        // Additional boost for entity matches
         for (const entity of chunkEntities) {
           if (queryEntities.some(qe => qe.toLowerCase() === entity.toLowerCase())) {
-            graphBoost += 0.2; // Exact entity match
+            graphBoost += 0.3; // Higher boost for exact entity match
           }
           if (connectedEntities.has(entity)) {
-            graphBoost += 0.1; // Connected entity
+            graphBoost += 0.15; // Higher boost for connected entity
           }
         }
       }
@@ -1589,15 +1741,30 @@ class RAGKnowledgeGraphManager {
         result.text,
         queryEmbedding,
         chunkEntities,
-        2 // Max 2 sentences for summary
+        result.chunk_type === 'relationship' ? 1 : 2 // Shorter summary for relationships
       );
       
       const vectorSimilarity = 1 / (1 + result.distance);
       const finalScore = Math.max(vectorSimilarity, relevanceScore) + graphBoost;
       
-      // Extract document title from metadata or use document ID
-      const metadata = JSON.parse(result.doc_metadata);
-      const documentTitle = metadata.title || metadata.name || result.document_id;
+      // Determine document title and source ID
+      let documentTitle: string;
+      let sourceId: string;
+      
+      if (result.chunk_type === 'document') {
+        const metadata = JSON.parse(result.doc_metadata);
+        documentTitle = metadata.title || metadata.name || result.document_id || 'Unknown Document';
+        sourceId = result.document_id || '';
+      } else if (result.chunk_type === 'entity') {
+        documentTitle = 'Knowledge Graph Entity';
+        sourceId = result.entity_id || '';
+      } else if (result.chunk_type === 'relationship') {
+        documentTitle = 'Knowledge Graph Relationship';
+        sourceId = result.relationship_id || '';
+      } else {
+        documentTitle = 'Unknown Source';
+        sourceId = '';
+      }
       
       enhancedResults.push({
         relevance_score: finalScore,
@@ -1608,7 +1775,9 @@ class RAGKnowledgeGraphManager {
         entities: chunkEntities,
         vector_similarity: vectorSimilarity,
         graph_boost: useGraph ? graphBoost : undefined,
-        full_context_available: true
+        full_context_available: true,
+        chunk_type: result.chunk_type as 'document' | 'entity' | 'relationship',
+        source_id: sourceId
       });
     }
     
@@ -1617,7 +1786,12 @@ class RAGKnowledgeGraphManager {
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, limit);
     
-    console.error(`✅ Enhanced search completed: ${finalResults.length} results with semantic summaries`);
+    // Log search statistics
+    const docResults = finalResults.filter(r => r.chunk_type === 'document').length;
+    const entityResults = finalResults.filter(r => r.chunk_type === 'entity').length;
+    const relResults = finalResults.filter(r => r.chunk_type === 'relationship').length;
+    
+    console.error(`✅ Enhanced hybrid search completed: ${finalResults.length} results (${docResults} docs, ${entityResults} entities, ${relResults} relationships)`);
     
     return finalResults;
   }
@@ -1747,6 +1921,67 @@ class RAGKnowledgeGraphManager {
       chunks: chunkCount.count
     };
   }
+
+  // === MIGRATION TOOLS ===
+
+  async getMigrationStatus(): Promise<{ currentVersion: number; migrations: Array<{ version: number; description: string; applied: boolean; applied_at?: string }>; pendingCount: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const migrationManager = new MigrationManager(this.db);
+    
+    // Add all migrations
+    migrations.forEach(migration => {
+      migrationManager.addMigration(migration);
+    });
+    
+    const currentVersion = migrationManager.getCurrentVersion();
+    const allMigrations = migrationManager.listMigrations();
+    const pendingCount = allMigrations.filter(m => !m.applied).length;
+    
+    return {
+      currentVersion,
+      migrations: allMigrations,
+      pendingCount
+    };
+  }
+
+
+
+  async rollbackMigration(targetVersion: number): Promise<{ rolledBack: number; currentVersion: number; rolledBackMigrations: Array<{ version: number; description: string }> }> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const migrationManager = new MigrationManager(this.db);
+    
+    // Add all migrations
+    migrations.forEach(migration => {
+      migrationManager.addMigration(migration);
+    });
+    
+    const currentVersion = migrationManager.getCurrentVersion();
+    
+    if (targetVersion >= currentVersion) {
+      return {
+        rolledBack: 0,
+        currentVersion,
+        rolledBackMigrations: []
+      };
+    }
+    
+    const migrationsToRollback = migrations
+      .filter(m => m.version > targetVersion && m.version <= currentVersion)
+      .sort((a, b) => b.version - a.version);
+    
+    migrationManager.rollback(targetVersion);
+    
+    return {
+      rolledBack: migrationsToRollback.length,
+      currentVersion: migrationManager.getCurrentVersion(),
+      rolledBackMigrations: migrationsToRollback.map(m => ({
+        version: m.version,
+        description: m.description
+      }))
+    };
+  }
 }
 
 // Initialize the manager
@@ -1832,6 +2067,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // NEW: Entity embedding tools
       case "embedAllEntities":
         return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.embedAllEntities(), null, 2) }] };
+      
+      // NEW: Migration tools
+      case "getMigrationStatus":
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.getMigrationStatus(), null, 2) }] };
+      case "runMigrations":
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.runMigrations(), null, 2) }] };
+      case "rollbackMigration":
+        return { content: [{ type: "text", text: JSON.stringify(await ragKgManager.rollbackMigration((validatedArgs as any).targetVersion as number), null, 2) }] };
       
       default:
         throw new Error(`Unknown tool: ${name}`);
