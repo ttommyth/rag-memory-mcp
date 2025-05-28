@@ -73,7 +73,7 @@ export const readGraphTool: ToolDefinition = {
 // === SEARCH NODES TOOL ===
 
 const searchNodesCapability: ToolCapabilityInfo = {
-  description: 'Search for entities in the knowledge graph using semantic vector similarity',
+  description: 'Search for nodes (entities, document chunks, etc.) in the knowledge base using semantic vector similarity',
   parameters: {
     type: 'object',
     properties: {
@@ -85,6 +85,14 @@ const searchNodesCapability: ToolCapabilityInfo = {
         type: 'number',
         description: 'Maximum number of results to return',
         default: 10
+      },
+      nodeTypesToSearch: {
+        type: 'array',
+        description: 'Array of node types to search (e.g., "entity", "documentChunk"). Defaults to ["entity", "documentChunk"]',
+        items: {
+          type: 'string'
+        },
+        default: ['entity', 'documentChunk']
       }
     },
     required: ['query'],
@@ -92,61 +100,67 @@ const searchNodesCapability: ToolCapabilityInfo = {
 };
 
 const searchNodesDescription: ToolRegistrationDescription = () => `<description>
-Search for specific nodes (entities) in the knowledge graph using semantic vector similarity.
-**Perfect for intelligent entity discovery using natural language queries.**
-Uses semantic embeddings to find conceptually similar entities, even without exact keyword matches.
+Search for specific nodes (e.g., entities, document chunks) in the knowledge base using semantic vector similarity.
+**Perfect for intelligent discovery using natural language queries across different types of stored information.**
+Uses semantic embeddings to find conceptually similar nodes, even without exact keyword matches.
 </description>
 
 <importantNotes>
-- (!important!) **Semantic vector search** - finds conceptually similar entities, not just keyword matches
-- (!important!) **Requires entity embeddings** - entities are automatically embedded when created
-- (!important!) **Returns similarity scores** with matching entities and their relationships
+- (!important!) **Semantic vector search** - finds conceptually similar nodes, not just keyword matches
+- (!important!) **Requires node embeddings** - nodes (entities, document chunks) are automatically embedded when created/processed
+- (!important!) **Returns similarity scores** with matching nodes and their relevant details (e.g., entity relationships, document context)
 - (!important!) More intelligent than traditional pattern matching - understands context and meaning
+- (!important!) Specify 'nodeTypesToSearch' to target specific types like 'entity' or 'documentChunk', or search both by default.
 </importantNotes>
 
 <whenToUseThisTool>
-- When looking for entities conceptually related to your query
+- When looking for entities or documents conceptually related to your query
 - **Before creating new entities** - to discover existing similar concepts
-- When exploring knowledge domains using natural language
-- For intelligent entity discovery without knowing exact names
-- When building semantic subgraphs around particular concepts
-- For content-aware entity exploration and research
+- When exploring knowledge domains using natural language across different data types
+- For intelligent discovery without knowing exact names or locations
+- When building semantic subgraphs or collections around particular concepts
+- For content-aware exploration and research across entities and documents
 </whenToUseThisTool>
 
 <features>
 - Semantic similarity search using sentence transformers
-- Natural language query processing for entity discovery
+- Natural language query processing for node discovery
+- Filter by node types (e.g., "entity", "documentChunk")
 - Similarity scoring for result ranking and relevance
-- Returns complete entity information including observations
-- Includes relationships between semantically similar entities
+- Returns complete node information (e.g., entity observations, document text)
+- Includes relationships for entity nodes
 - Configurable result limits for focused or broad exploration
 </features>
 
 <bestPractices>
 - Use natural language descriptions rather than exact keywords
-- Try conceptual queries like "artificial intelligence frameworks" or "database technologies"
-- Start with broader queries, then refine based on similarity scores
-- Entities are automatically embedded when created
+- Try conceptual queries like "artificial intelligence frameworks" or "database technologies impact on healthcare"
+- Utilize 'nodeTypesToSearch' to focus your search if needed (e.g., only 'entity' or only 'documentChunk')
+- Start with broader queries, then refine based on similarity scores and node types
+- Nodes are automatically embedded when created/processed
 - Review similarity scores to understand conceptual relevance
-- Combine with openNodes for detailed analysis of interesting findings
+- Combine with openNodes (for entities) or getDetailedContext (for documents) for detailed analysis of interesting findings
 </bestPractices>
 
 <parameters>
-- query: Natural language search query for semantic entity discovery (string, required)
-- limit: Maximum number of similar entities to return, default 10 (number, optional)
+- query: Natural language search query for semantic node discovery (string, required)
+- limit: Maximum number of similar nodes to return, default 10 (number, optional)
+- nodeTypesToSearch: Array of node types to include in the search (e.g., "entity", "documentChunk"). Defaults to ["entity", "documentChunk"] (string[], optional)
 </parameters>
 
 <examples>
-- Conceptual search: {"query": "machine learning frameworks", "limit": 5}
-- Technology discovery: {"query": "web development tools"}
-- Domain exploration: {"query": "quantum physics concepts", "limit": 15}
-- Semantic similarity: {"query": "data visualization libraries"}
-- Research queries: {"query": "renewable energy technologies"}
+- Conceptual search (entities & documents): {"query": "machine learning frameworks", "limit": 5}
+- Entity-only search: {"query": "web development tools", "nodeTypesToSearch": ["entity"]}
+- Document-only search: {"query": "impact of AI on climate change", "nodeTypesToSearch": ["documentChunk"]}
+- Domain exploration (entities & documents): {"query": "quantum physics concepts", "limit": 15}
+- Semantic similarity (entities & documents): {"query": "data visualization libraries"}
+- Research queries (entities & documents): {"query": "renewable energy technologies and their economic feasibility"}
 </examples>`;
 
 const searchNodesSchema: z.ZodRawShape = {
-  query: z.string().describe('Natural language search query for semantic entity discovery'),
-  limit: z.number().optional().default(10).describe('Maximum number of similar entities to return'),
+  query: z.string().describe('Natural language search query for semantic node discovery'),
+  limit: z.number().optional().default(10).describe('Maximum number of similar nodes to return'),
+  nodeTypesToSearch: z.array(z.string()).optional().default(['entity', 'documentChunk']).describe('Array of node types to search (e.g., "entity", "documentChunk"). Defaults to ["entity", "documentChunk"]'),
 };
 
 export const searchNodesTool: ToolDefinition = {

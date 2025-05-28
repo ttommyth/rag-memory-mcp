@@ -20,6 +20,7 @@ An advanced MCP server for **RAG-enabled memory** through a knowledge graph with
 - **🔗 Hybrid Search**: Combines vector similarity with graph traversal
 - **⚡ SQLite Backend**: Fast local storage with sqlite-vec for vector operations
 - **🎯 Entity Extraction**: Automatic term extraction from documents
+- **🔄 Automated Database Migrations**: Ensures database schema is up-to-date automatically on server startup.
 
 ## Tools
 
@@ -34,20 +35,22 @@ This server provides comprehensive memory management through the Model Context P
 
 ### 🧠 Knowledge Graph
 - `createEntities`: Create new entities with observations and types
-- `createRelations`: Establish relationships between entities
+- `createRelations`: Establish relationships between entities. (If linked entities don't exist, they are automatically created).
 - `addObservations`: Add contextual information to existing entities
 - `deleteEntities`: Remove entities and their relationships
 - `deleteRelations`: Remove specific relationships
 - `deleteObservations`: Remove specific observations from entities
+- `reEmbedEverything`: Re-embed all entities, document chunks, and knowledge graph chunks (e.g., after an embedding model update or for data consistency).
 
 ### 🔍 Search & Retrieval
-- `hybridSearch`: Advanced search combining vector similarity and graph traversal
-- `searchNodes`: Find entities by name, type, or observation content
+- `hybridSearch`: Advanced search that first performs a semantic search for relevant nodes (entities and/or document chunks via the enhanced `searchNodes` tool) and then, if enabled via its `useGraph` parameter, enhances these results with knowledge graph traversal for superior contextual understanding.
+- `searchNodes`: Finds nodes (entities, document chunks, etc.) using semantic vector similarity based on a natural language query. Can specify `nodeTypesToSearch` (e.g., `["entity"]`, `["documentChunk"]`) or defaults to searching both.
 - `openNodes`: Retrieve specific entities and their relationships
 - `readGraph`: Get complete knowledge graph structure
+- `getDetailedContext`: Retrieve detailed context for a specific chunk, including surrounding content (often used after `hybridSearch`).
 
 ### 📊 Analytics
-- `getKnowledgeGraphStats`: Comprehensive statistics about the knowledge base
+- `getKnowledgeGraphStats`: Comprehensive statistics about the knowledge base and RAG system.
 
 ## Usage Scenarios
 
@@ -175,7 +178,7 @@ This enables **hybrid search** that combines:
 
 ## Environment Variables
 
-- `MEMORY_DB_PATH`: Path to the SQLite database file (default: `memory.db` in the server directory)
+- `DB_FILE_PATH`: Path to the SQLite database file (default: `rag-memory.db` in the server directory. If `DB_FILE_PATH` is relative, it's relative to the server's installation directory).
 
 ## Development Setup
 

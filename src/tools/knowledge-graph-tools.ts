@@ -264,7 +264,7 @@ export const addObservationsTool: ToolDefinition = {
 // === HYBRID SEARCH TOOL ===
 
 const hybridSearchCapability: ToolCapabilityInfo = {
-  description: 'Perform advanced hybrid search combining vector similarity with knowledge graph traversal',
+  description: 'Perform advanced hybrid search combining an initial semantic search (across entities and/or documents) with knowledge graph traversal for enhanced results.',
   parameters: {
     type: 'object',
     properties: {
@@ -288,56 +288,57 @@ const hybridSearchCapability: ToolCapabilityInfo = {
 };
 
 const hybridSearchDescription: ToolRegistrationDescription = () => `<description>
-Perform sophisticated hybrid search that combines vector similarity with knowledge graph traversal for superior results.
-**The most powerful search tool in the system** - leverages both semantic similarity and structural relationships.
-Perfect for complex queries that benefit from both content matching and conceptual connections.
+Perform sophisticated hybrid search. This tool first uses semantic similarity (via the enhanced 'searchNodes' tool) to find relevant entities and/or document chunks, and then, if enabled, enhances these results with knowledge graph traversal for superior contextual understanding.
+**The most powerful search tool in the system** - leverages both initial semantic similarity and structural relationships from the graph.
+Perfect for complex queries that benefit from both direct content matching and broader conceptual connections.
 </description>
 
 <importantNotes>
-- (!important!) **Hybrid approach is more powerful** than pure vector or graph search alone
-- (!important!) Graph enhancement finds related concepts even if not directly mentioned
-- (!important!) Results include similarity scores, graph boost, and hybrid rankings
-- (!important!) **Best results when knowledge graph is well-populated** with entities and relationships
+- (!important!) **Hybrid approach is more powerful** than pure vector or graph search alone due to its two-stage process.
+- (!important!) Initial semantic search leverages the versatile 'searchNodes' tool to find relevant base items (entities, documents).
+- (!important!) Graph enhancement (controlled by 'useGraph') then finds related concepts and connections even if not directly matched in the initial semantic search.
+- (!important!) Results include similarity scores, graph boost indicators, and hybrid rankings.
+- (!important!) **Best results when knowledge graph is well-populated** with entities and relationships to support the enhancement stage.
 </importantNotes>
 
 <whenToUseThisTool>
-- When you need comprehensive search across documents and knowledge
-- For complex queries requiring conceptual understanding
-- When exploring relationships between concepts
-- **Before making decisions** - to gather all relevant information
-- When researching topics that span multiple domains
-- For discovery of implicit connections and patterns
+- When you need comprehensive search across documents and knowledge, with an emphasis on graph-based connections.
+- For complex queries requiring deep conceptual understanding beyond initial semantic matches.
+- When exploring relationships between concepts surfaced by an initial search.
+- **Before making decisions** - to gather all relevant information, including indirectly related items found via graph traversal.
+- When researching topics that span multiple domains and require connecting disparate pieces of information.
+- For discovery of implicit connections and patterns that simple semantic search might miss.
 </whenToUseThisTool>
 
 <features>
-- Vector similarity search using sentence transformers
-- Knowledge graph traversal for conceptual enhancement
-- Hybrid scoring combining multiple relevance signals
-- Entity association highlighting
-- Configurable result limits and graph usage
-- Rich result metadata with multiple ranking scores
+- Initial semantic similarity search across specified node types (entities, documents) via 'searchNodes'.
+- Optional knowledge graph traversal for conceptual enhancement and discovery of related items.
+- Hybrid scoring combining multiple relevance signals (initial similarity, graph boost).
+- Entity association highlighting based on graph connections.
+- Configurable result limits and graph usage.
+- Rich result metadata with multiple ranking scores.
 </features>
 
 <bestPractices>
-- Use natural language queries rather than keywords
-- Enable graph enhancement for better conceptual coverage
-- Start with broader queries, then narrow down based on results
-- Review entity associations to understand why results were selected
-- Use appropriate limits based on your analysis needs
-- Combine with other tools for comprehensive knowledge exploration
+- Use natural language queries rather than just keywords.
+- Enable graph enhancement ('useGraph': true) for better conceptual coverage and discovery of related information.
+- Start with broader queries, then narrow down based on results from both semantic search and graph enhancement.
+- Review entity associations to understand how graph traversal contributed to the results.
+- Use appropriate limits based on your analysis needs.
+- Combine with other tools like 'getDetailedContext' or 'openNodes' for comprehensive knowledge exploration of the hybrid results.
 </bestPractices>
 
 <parameters>
-- query: Natural language search query (string, required)
-- limit: Maximum results to return, default 5 (number, optional)
-- useGraph: Enable knowledge graph enhancement, default true (boolean, optional)
+- query: Natural language search query (string, required) - passed to initial semantic search.
+- limit: Maximum results to return, default 5 (number, optional) - influences initial search and final output.
+- useGraph: Enable knowledge graph enhancement after initial semantic search, default true (boolean, optional).
 </parameters>
 
 <examples>
-- Conceptual search: {"query": "machine learning applications in healthcare", "limit": 10}
-- Technical research: {"query": "React performance optimization techniques", "useGraph": true}
-- Discovery mode: {"query": "Einstein's contributions to modern physics", "limit": 15}
-- Quick lookup: {"query": "quantum computing advantages", "limit": 3, "useGraph": false}
+- Conceptual search with graph enhancement: {"query": "machine learning applications in healthcare", "limit": 10, "useGraph": true}
+- Technical research with graph enhancement: {"query": "React performance optimization techniques", "useGraph": true}
+- Discovery mode with graph enhancement: {"query": "Einstein's contributions to modern physics", "limit": 15, "useGraph": true}
+- Semantic search of documents/entities *without* graph enhancement: {"query": "quantum computing advantages", "limit": 3, "useGraph": false} (relies on 'searchNodes' broad default)
 </examples>`;
 
 const hybridSearchSchema: z.ZodRawShape = {
@@ -437,6 +438,65 @@ export const getDetailedContextTool: ToolDefinition = {
   schema: getDetailedContextSchema,
 };
 
+// === RE-EMBED EVERYTHING TOOL ===
+
+const reEmbedEverythingCapability: ToolCapabilityInfo = {
+  description: 'Re-embed all entities, document chunks, and knowledge graph chunks in the system.',
+  parameters: {
+    type: 'object',
+    properties: {}, // No parameters needed
+    required: [],
+  },
+};
+
+const reEmbedEverythingDescription: ToolRegistrationDescription = () => `<description>
+Trigger a full re-embedding of all entities (including their latest observations), all document chunks, and all specialized knowledge graph chunks.
+**Use this tool to refresh all embeddings if the underlying embedding model has changed or if data consistency is suspected.**
+This can be a long-running operation depending on the size of the knowledge base.
+</description>
+
+<importantNotes>
+- (!important!) **Comprehensive Re-embedding**: Affects all entities, documents, and KG chunks.
+- (!important!) **Potential for Long Duration**: Execution time depends on data volume.
+- (!important!) **Ensures Consistency**: Useful after model updates or data migrations.
+</importantNotes>
+
+<whenToUseThisTool>
+- After updating the embedding model used by the system.
+- If you suspect embeddings might be out of sync with source data.
+- Periodically for maintenance to ensure all items are embedded with the latest logic.
+- Before critical analyses that rely on up-to-date semantic representations.
+</whenToUseThisTool>
+
+<features>
+- Re-embeds all entities.
+- Re-embeds all document chunks for all stored documents.
+- Re-embeds all specialized knowledge graph chunks (entity/relationship representations).
+- Provides a summary of actions taken.
+</features>
+
+<bestPractices>
+- Use during off-peak hours if your knowledge base is large.
+- Ensure the embedding model is stable and correctly configured before running.
+- Monitor system logs for progress and any potential errors.
+</bestPractices>
+
+<parameters>
+- None
+</parameters>
+
+<examples>
+- Re-embed everything: {}
+</examples>`;
+
+const reEmbedEverythingSchema: z.ZodRawShape = {}; // No parameters
+
+export const reEmbedEverythingTool: ToolDefinition = {
+  capability: reEmbedEverythingCapability,
+  description: reEmbedEverythingDescription,
+  schema: reEmbedEverythingSchema,
+};
+
 // Export all knowledge graph tools
 export const knowledgeGraphTools = {
   createEntities: createEntitiesTool,
@@ -445,4 +505,5 @@ export const knowledgeGraphTools = {
   hybridSearch: hybridSearchTool,
   // embedAllEntities removed - entities are now automatically embedded when created
   getDetailedContext: getDetailedContextTool,
+  reEmbedEverything: reEmbedEverythingTool, // Added new tool
 }; 

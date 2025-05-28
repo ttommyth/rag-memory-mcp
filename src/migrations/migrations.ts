@@ -154,5 +154,75 @@ export const migrations: Migration[] = [
       // For now, we'll just mark this as not reversible
       throw new Error('This migration cannot be reversed due to SQLite limitations');
     }
+  },
+
+  {
+    version: 3,
+    description: 'Add chunk_id column to chunks table for hybrid search join',
+    up: (db) => {
+      try {
+        db.exec(`ALTER TABLE chunks ADD COLUMN chunk_id TEXT`);
+        console.error('Migration 3: Successfully added chunk_id column to chunks table.');
+      } catch (e: any) {
+        if (e.message.includes('duplicate column name') || e.message.includes('already exists')) {
+          console.warn('Migration 3: Column chunk_id likely already exists in chunks table.');
+        } else {
+          console.error('Migration 3: Failed to add chunk_id to chunks table. This might be due to VIRTUAL table limitations or other issues.', e);
+          // Depending on strictness, might re-throw e to halt migration if this is critical
+        }
+      }
+    },
+    down: (db) => {
+      console.warn('Migration 3: Rollback (removing chunk_id from chunks) is not directly supported via ALTER TABLE in SQLite. Requires table recreation.');
+      // No actual down DDL to prevent data loss or virtual table issues without careful table recreation steps.
+    }
+  },
+
+  {
+    version: 4,
+    description: 'Recreate chunks and entity_embeddings virtual tables with explicit ID columns (chunk_id and entity_id respectively).',
+    up: (db) => {
+      // Drop existing virtual tables if they exist
+      db.exec(`DROP TABLE IF EXISTS chunks`);
+      db.exec(`DROP TABLE IF EXISTS entity_embeddings`);
+
+      // Recreate chunks with chunk_id
+      db.exec(`
+        CREATE VIRTUAL TABLE chunks USING vec0(
+          chunk_id TEXT,
+          embedding FLOAT[384]
+        )
+      `);
+      console.error('Migration 4: Recreated virtual table chunks with chunk_id column.');
+
+      // Recreate entity_embeddings with entity_id
+      db.exec(`
+        CREATE VIRTUAL TABLE entity_embeddings USING vec0(
+          entity_id TEXT,
+          embedding FLOAT[384]
+        )
+      `);
+      console.error('Migration 4: Recreated virtual table entity_embeddings with entity_id column.');
+    },
+    down: (db) => {
+      // Drop new virtual tables
+      db.exec(`DROP TABLE IF EXISTS chunks`);
+      db.exec(`DROP TABLE IF EXISTS entity_embeddings`);
+
+      // Recreate them with their original V1 schema (as per migration 1)
+      db.exec(`
+        CREATE VIRTUAL TABLE chunks USING vec0(
+          embedding FLOAT[384]
+        )
+      `);
+      console.error('Migration 4 Rollback: Reverted chunks to original schema.');
+
+      db.exec(`
+        CREATE VIRTUAL TABLE entity_embeddings USING vec0(
+          embedding FLOAT[384]
+        )
+      `);
+      console.error('Migration 4 Rollback: Reverted entity_embeddings to original schema.');
+    }
   }
 ]; 
