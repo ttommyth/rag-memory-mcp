@@ -20,19 +20,80 @@ import { getAllMCPTools, validateToolArgs, getSystemInfo } from './src/tools/too
 // Import migration system
 import { MigrationManager } from './src/migrations/migration-manager.js';
 import { migrations } from './src/migrations/migrations.js';
+import { MultiDbMigrationManager } from './src/database/multi-db-migration-manager.js';
+import { multiDbMigrations } from './src/database/multi-db-migrations.js';
+
+// Import database abstraction layer
+import { DatabaseFactory } from './src/database/database-factory.js';
+import { ConfigManager } from './src/database/config-manager.js';
+import { DatabaseAdapter, DatabaseConfig } from './src/database/interfaces.js';
 
 // Configure Hugging Face transformers for better compatibility
 if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = './node_modules/@huggingface/transformers/dist/';
 }
 
-// Define database file path using environment variable with fallback
-const defaultDbPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rag-memory.db');
-const DB_FILE_PATH = process.env.DB_FILE_PATH
-  ? path.isAbsolute(process.env.DB_FILE_PATH)
-    ? process.env.DB_FILE_PATH
-    : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.DB_FILE_PATH)
-  : defaultDbPath;
+// Database configuration setup - now using database factory with environment-based selection
+const configManager = new ConfigManager();
+let dbConfig: DatabaseConfig;
+
+// Enhanced DB_TYPE environment variable handling with better error messages
+const dbType = process.env.DB_TYPE?.toLowerCase();
+console.error(`🔧 Database Type Configuration: ${dbType || 'not set (defaulting to SQLite)'}`);  
+
+// Load database configuration based on DB_TYPE environment variable
+if (dbType && dbType !== 'sqlite') {
+  // User explicitly requested a specific database type
+  try {
+    dbConfig = configManager.loadFromEnvironment();
+    console.error(`✅ Database configuration loaded successfully: ${dbConfig.type}`);
+  } catch (error) {
+    console.error(`❌ Failed to load ${dbType.toUpperCase()} configuration from environment variables:`);
+    console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+    
+    if (dbType === 'postgresql') {
+      console.error(`   Required PostgreSQL environment variables:`);
+      console.error(`   - PG_HOST (PostgreSQL server host)`);
+      console.error(`   - PG_PORT (PostgreSQL server port, e.g., 5432)`);
+      console.error(`   - PG_DATABASE (database name)`);
+      console.error(`   - PG_USERNAME (database username)`);
+      console.error(`   - PG_PASSWORD (database password)`);
+      console.error(`   Optional: PG_SSL (SSL configuration)`);
+    }
+    
+    console.error(`   Falling back to SQLite for compatibility`);
+    dbConfig = createSQLiteFallbackConfig();
+  }
+} else {
+  // No DB_TYPE specified or explicitly SQLite - use SQLite with environment customization
+  console.error('📋 Using SQLite database (default or DB_TYPE=sqlite)');
+  dbConfig = createSQLiteFallbackConfig();
+}
+
+// Helper function to create SQLite fallback configuration
+function createSQLiteFallbackConfig(): DatabaseConfig {
+  const defaultDbPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rag-memory.db');
+  const DB_FILE_PATH = process.env.DB_FILE_PATH
+    ? path.isAbsolute(process.env.DB_FILE_PATH)
+      ? process.env.DB_FILE_PATH
+      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.DB_FILE_PATH)
+    : defaultDbPath;
+  
+  console.error(`📁 SQLite database path: ${DB_FILE_PATH}`);
+  
+  return {
+    type: 'sqlite',
+    vectorDimensions: parseInt(process.env.VECTOR_DIMENSIONS || '384'),
+    sqlite: {
+      filePath: DB_FILE_PATH,
+      enableWAL: process.env.SQLITE_ENABLE_WAL !== 'false',
+      pragmas: {
+        busy_timeout: parseInt(process.env.SQLITE_BUSY_TIMEOUT || '5000'),
+        cache_size: parseInt(process.env.SQLITE_CACHE_SIZE || '-2000')
+      }
+    }
+  };
+}
 
 // Original MCP interfaces
 interface Entity {
@@ -122,6 +183,7 @@ interface DetailedContext {
 
 // Enhanced RAG-enabled Knowledge Graph Manager
 class RAGKnowledgeGraphManager {
+  private dbAdapter: DatabaseAdapter | null = null;
   private db: Database.Database | null = null;
   private encoding: any = null;
   private embeddingModel: any = null;
@@ -130,11 +192,25 @@ class RAGKnowledgeGraphManager {
   async initialize() {
     console.error('🚀 Initializing RAG Knowledge Graph MCP Server...');
     
-    // Initialize database
-    this.db = new Database(DB_FILE_PATH);
-    
-    // Load sqlite-vec extension
-    sqliteVec.load(this.db);
+    try {
+      // Initialize database using factory pattern
+      console.error('🔧 Creating database adapter...');
+      const factory = DatabaseFactory.getInstance();
+      this.dbAdapter = await factory.createAdapter(dbConfig);
+      console.error(`✅ Database adapter created: ${!!this.dbAdapter}`);
+      
+      // For SQLite compatibility, maintain legacy db reference
+      if (dbConfig.type === 'sqlite') {
+        this.db = new Database((dbConfig as any).sqlite.filePath);
+        sqliteVec.load(this.db);
+        console.error('✅ SQLite database with vector extension loaded');
+      }
+      
+      console.error('✅ Database initialization completed');
+    } catch (error) {
+      console.error('❌ Database initialization failed:', error);
+      throw error;
+    }
     
     // Initialize tiktoken
     this.encoding = get_encoding("cl100k_base");
@@ -179,34 +255,64 @@ class RAGKnowledgeGraphManager {
   }
 
   async runMigrations(): Promise<{ applied: number; currentVersion: number; appliedMigrations: Array<{ version: number; description: string }> }> {
-    if (!this.db) throw new Error('Database not initialized');
-
     console.error('🔄 Running database migrations...');
     
-    // Initialize migration manager
-    const migrationManager = new MigrationManager(this.db);
-    
-    // Add all migrations
-    migrations.forEach(migration => {
-      migrationManager.addMigration(migration);
-    });
-    
-    // Get pending migrations before running them
-    const pendingBefore = migrationManager.getPendingMigrations();
-    
-    // Run pending migrations
-    const result = await migrationManager.runMigrations();
-    
-    console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
-    
-    return {
-      applied: result.applied,
-      currentVersion: result.currentVersion,
-      appliedMigrations: pendingBefore.slice(0, result.applied).map(m => ({
-        version: m.version,
-        description: m.description
-      }))
-    };
+    // Use database adapter migrations if available, otherwise fallback to legacy
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      try {
+        // Use MultiDbMigrationManager for PostgreSQL
+        const migrationManager = new MultiDbMigrationManager(this.dbAdapter);
+        
+        // Add all multi-database migrations
+        multiDbMigrations.forEach(migration => {
+          migrationManager.addMigration(migration);
+        });
+        
+        const result = await migrationManager.runMigrations();
+        console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
+        
+        return {
+          applied: result.applied,
+          currentVersion: result.currentVersion,
+          appliedMigrations: multiDbMigrations.slice(0, result.applied).map(m => ({
+            version: m.version,
+            description: m.description
+          }))
+        };
+      } catch (error) {
+        console.error('❌ PostgreSQL adapter migration failed:', error);
+        throw error;
+      }
+    } else {
+      // SQLite legacy migration system
+      if (!this.db) {
+        throw new Error('SQLite database not available');
+      }
+      
+      const migrationManager = new MigrationManager(this.db);
+      
+      // Add all migrations
+      migrations.forEach(migration => {
+        migrationManager.addMigration(migration);
+      });
+      
+      // Get pending migrations before running them
+      const pendingBefore = migrationManager.getPendingMigrations();
+      
+      // Run pending migrations
+      const result = await migrationManager.runMigrations();
+      
+      console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
+      
+      return {
+        applied: result.applied,
+        currentVersion: result.currentVersion,
+        appliedMigrations: pendingBefore.slice(0, result.applied).map(m => ({
+          version: m.version,
+          description: m.description
+        }))
+      };
+    }
   }
 
   cleanup() {
@@ -219,6 +325,10 @@ class RAGKnowledgeGraphManager {
       this.embeddingModel = null;
       this.modelInitialized = false;
     }
+    if (this.dbAdapter) {
+      this.dbAdapter.close();
+      this.dbAdapter = null;
+    }
     if (this.db) {
       this.db.close();
       this.db = null;
@@ -228,6 +338,13 @@ class RAGKnowledgeGraphManager {
   // === ORIGINAL MCP FUNCTIONALITY ===
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for createEntities');
+      return await this.dbAdapter.createEntities(entities);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const newEntities = [];
@@ -255,6 +372,14 @@ class RAGKnowledgeGraphManager {
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for createRelations');
+      await this.dbAdapter.createRelations(relations);
+      return relations; // Return the input relations as created
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const newRelations = [];
@@ -286,6 +411,22 @@ class RAGKnowledgeGraphManager {
   }
 
   async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for addObservations');
+      const observationAdditions = observations.map(obs => ({
+        entityName: obs.entityName,
+        contents: obs.contents
+      }));
+      await this.dbAdapter.addObservations(observationAdditions);
+      // Return expected format for compatibility
+      return observations.map(obs => ({
+        entityName: obs.entityName,
+        addedObservations: obs.contents
+      }));
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const results = [];
@@ -324,6 +465,13 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteEntities(entityNames: string[]): Promise<void> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for deleteEntities');
+      return await this.dbAdapter.deleteEntities(entityNames);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🗑️ Deleting entities: ${entityNames.join(', ')}`);
@@ -435,6 +583,13 @@ class RAGKnowledgeGraphManager {
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for readGraph');
+      return await this.dbAdapter.readGraph();
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const entities = this.db.prepare(`
@@ -467,6 +622,13 @@ class RAGKnowledgeGraphManager {
     limit = 10, 
     nodeTypesToSearch: Array<'entity' | 'documentChunk'> = ['entity', 'documentChunk']
   ): Promise<KnowledgeGraph & { documentChunks?: any[] }> { // Extend return type for document chunks
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for searchNodes');
+      return await this.dbAdapter.searchNodes(query, limit);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🔍 Semantic node search: "${query}", types: ${nodeTypesToSearch.join(', ')}`);
@@ -1388,6 +1550,14 @@ class RAGKnowledgeGraphManager {
   // === NEW SEPARATE TOOLS ===
 
   async storeDocument(id: string, content: string, metadata: Record<string, any> = {}): Promise<{ id: string; stored: boolean; chunksCreated?: number; chunksEmbedded?: number }> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for storeDocument');
+      await this.dbAdapter.storeDocument(id, content, metadata);
+      return { id, stored: true };
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📄 Storing document: ${id}`);
@@ -1471,6 +1641,17 @@ class RAGKnowledgeGraphManager {
   }
 
   async embedChunks(documentId: string): Promise<{ documentId: string; embeddedChunks: number }> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+      console.error('🐘 Using PostgreSQL adapter for embedChunks');
+      const result = await this.dbAdapter.embedChunks(documentId);
+      return { 
+        documentId, 
+        embeddedChunks: result.embeddedChunks || 0 
+      };
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     if (!this.modelInitialized) {
       console.warn('⚠️ Embedding model not initialized. Skipping document chunk embedding.');

@@ -8,6 +8,8 @@
 
 An advanced MCP server for **RAG-enabled memory** through a knowledge graph with **vector search** capabilities. This server extends the basic memory concepts with semantic search, document processing, and hybrid retrieval for more intelligent memory management.
 
+**🆕 NEW: Full PostgreSQL Support** - Now supports both SQLite (default) and PostgreSQL databases with automatic adapter switching, production-ready performance optimizations, and pgvector integration for enterprise deployments.
+
 **Inspired by:** [Knowledge Graph Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) from the Model Context Protocol project.
 
 **Note:** This server is designed to run locally alongside MCP clients (e.g., Claude Desktop, VS Code) and requires local file system access for database storage.
@@ -18,9 +20,12 @@ An advanced MCP server for **RAG-enabled memory** through a knowledge graph with
 - **🔍 Vector Search**: Semantic similarity search using sentence transformers
 - **📄 Document Processing**: RAG-enabled document chunking and embedding
 - **🔗 Hybrid Search**: Combines vector similarity with graph traversal
-- **⚡ SQLite Backend**: Fast local storage with sqlite-vec for vector operations
+- **🗄️ Dual Database Support**: 
+  - **SQLite**: Fast local storage with sqlite-vec for vector operations (default)
+  - **PostgreSQL**: Production-ready with pgvector, JSONB, and advanced indexing
 - **🎯 Entity Extraction**: Automatic term extraction from documents
-- **🔄 Automated Database Migrations**: Ensures database schema is up-to-date automatically on server startup.
+- **🔄 Automated Database Migrations**: Multi-database migration system with schema versioning
+- **⚡ Production Ready**: Connection pooling, transaction management, and performance optimizations
 
 ## Tools
 
@@ -176,9 +181,95 @@ This enables **hybrid search** that combines:
 - Vector similarity (semantic matching)
 - Graph traversal (conceptual relationships)
 
-## Environment Variables
+## Database Configuration
 
-- `DB_FILE_PATH`: Path to the SQLite database file (default: `rag-memory.db` in the server directory. If `DB_FILE_PATH` is relative, it's relative to the server's installation directory).
+This server supports both SQLite and PostgreSQL databases with automatic adapter switching based on environment configuration.
+
+### SQLite (Default)
+Perfect for development and lightweight deployments:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "npx",
+      "args": ["-y", "rag-memory-mcp"],
+      "env": {
+        "DB_TYPE": "sqlite",
+        "DB_FILE_PATH": "/path/to/custom/memory.db"
+      }
+    }
+  }
+}
+```
+
+### PostgreSQL (Production)
+Ideal for production environments with advanced features:
+
+**Benefits:**
+- 🚀 **Performance**: HNSW vector indexes for fast similarity search
+- 🔒 **ACID Compliance**: Full transaction support with rollback capabilities  
+- 📊 **Advanced Types**: JSONB for efficient metadata storage and querying
+- 🔄 **Concurrent Access**: Multi-user support with connection pooling
+- 📈 **Scalability**: Handle larger datasets with better memory management
+- 🛡️ **Production Features**: SSL, authentication, monitoring, and backup support
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "npx", 
+      "args": ["-y", "rag-memory-mcp"],
+      "env": {
+        "DB_TYPE": "postgresql",
+        "PG_HOST": "localhost",
+        "PG_PORT": "5432",
+        "PG_DATABASE": "rag_memory",
+        "PG_USERNAME": "your_user",
+        "PG_PASSWORD": "your_password",
+        "PG_SSL": "false"
+      }
+    }
+  }
+}
+```
+
+### Docker PostgreSQL Setup
+Quick start with Docker:
+
+```bash
+# Start PostgreSQL with pgvector
+docker-compose up -d
+
+# Or manually:
+docker run --name rag-postgres \
+  -e POSTGRES_DB=rag_memory \
+  -e POSTGRES_USER=rag_user \
+  -e POSTGRES_PASSWORD=rag_password \
+  -p 5432:5432 \
+  -d pgvector/pgvector:pg16
+```
+
+### Environment Variables
+
+**SQLite Configuration:**
+- `DB_TYPE`: Set to `"sqlite"` (default if not specified)
+- `DB_FILE_PATH`: Path to SQLite database file (default: `rag-memory.db`)
+- `VECTOR_DIMENSIONS`: Vector embedding dimensions (default: 384)
+
+**PostgreSQL Configuration:**
+- `DB_TYPE`: Set to `"postgresql"`
+- `PG_HOST`: PostgreSQL server host
+- `PG_PORT`: PostgreSQL server port (default: 5432)
+- `PG_DATABASE`: Database name
+- `PG_USERNAME`: Database username
+- `PG_PASSWORD`: Database password
+- `PG_SSL`: SSL configuration ("true"/"false", default: "false")
+
+**Performance Tuning:**
+- `SQLITE_ENABLE_WAL`: Enable WAL mode for SQLite (default: true)
+- `SQLITE_BUSY_TIMEOUT`: SQLite busy timeout in ms (default: 5000)
+- `SQLITE_CACHE_SIZE`: SQLite cache size in KB (default: -2000)
 
 ## Development Setup
 
@@ -286,4 +377,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ---
 
-**Built with**: TypeScript, SQLite, sqlite-vec, Hugging Face Transformers, Model Context Protocol SDK
+**Built with**: TypeScript, SQLite, PostgreSQL, sqlite-vec, pgvector, Hugging Face Transformers, Model Context Protocol SDK
+
+**Database Support**: SQLite (sqlite-vec) , PostgreSQL (pgvector)
