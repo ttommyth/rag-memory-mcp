@@ -207,12 +207,12 @@ Perfect for development and lightweight deployments:
 Ideal for production environments with advanced features:
 
 **Benefits:**
-- 🚀 **Performance**: HNSW vector indexes for fast similarity search
 - 🔒 **ACID Compliance**: Full transaction support with rollback capabilities  
 - 📊 **Advanced Types**: JSONB for efficient metadata storage and querying
 - 🔄 **Concurrent Access**: Multi-user support with connection pooling
 - 📈 **Scalability**: Handle larger datasets with better memory management
 - 🛡️ **Production Features**: SSL, authentication, monitoring, and backup support
+- 🚧 **Vector Indexing**: HNSW vector indexes planned for improved search performance
 
 ```json
 {
