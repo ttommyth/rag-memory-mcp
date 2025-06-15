@@ -20,19 +20,29 @@
   "scripts": {
     "build": "tsc && shx chmod +x dist/*.js",
     "prepare": "npm run build",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "test": "npm run build && node dist/src/testing/test-runner-simple-fixed.js",
+    "test:simple": "npm run build && node dist/src/testing/test-runner-simple-fixed.js",
+    "test:coverage": "npm run test && echo 'Test coverage report available in test-results/'",
+    "test:watch": "npm run build && node --watch dist/src/testing/test-runner-simple-fixed.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.5.1",
     "@modelcontextprotocol/sdk": "1.0.1",
+    "@types/dotenv": "^6.1.1",
     "better-sqlite3": "11.9.1",
+    "commander": "^14.0.0",
+    "dotenv": "^16.5.0",
+    "pg": "^8.12.0",
     "sqlite-vec": "^0.1.6",
     "tiktoken": "^1.0.17",
     "zod": "^3.25.28"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/commander": "^2.12.0",
     "@types/node": "^22",
+    "@types/pg": "^8.11.10",
     "shx": "^0.3.4",
     "typescript": "^5.6.2"
   }
