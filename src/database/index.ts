@@ -20,13 +20,9 @@ export { ConfigManager } from './config-manager.js';
 export { EnvironmentManager, type Environment } from './environment-manager.js';
 export { ConfigurationFactory, type ConfigurationSource, type ConfigurationResult } from './configuration-factory.js';
 
-// Import types for internal use
-import { DatabaseConfig } from './interfaces.js';
-
 // Utilities
 export { DatabaseLogger } from './logger.js';
 export { ConnectionPoolManager } from './connection-pool-manager.js';
-export { SQLiteTransactionManager } from './transaction-manager.js';
 
 // Migration System
 export { MultiDbMigrationManager } from './multi-db-migration-manager.js';
@@ -58,6 +54,9 @@ export type {
   RollbackResult,
   EmbeddingResult,
   DeletionResult,
+  ReEmbedResult,
+  KnowledgeGraphChunkResult,
+  StoreDocumentResult,
   DatabaseLogger as DatabaseLoggerInterface
 } from './interfaces.js';
 

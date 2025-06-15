@@ -193,11 +193,17 @@ class RAGKnowledgeGraphManager {
     console.error('🚀 Initializing RAG Knowledge Graph MCP Server...');
     
     try {
-      // Initialize database using factory pattern
-      console.error('🔧 Creating database adapter...');
-      const factory = DatabaseFactory.getInstance();
-      this.dbAdapter = await factory.createAdapter(dbConfig);
-      console.error(`✅ Database adapter created: ${!!this.dbAdapter}`);
+      // Initialize database using factory pattern for PostgreSQL only
+      // SQLite adapter has incomplete implementation, so use legacy path
+      if (dbConfig.type === 'postgresql') {
+        console.error('🔧 Creating PostgreSQL database adapter...');
+        const factory = DatabaseFactory.getInstance();
+        this.dbAdapter = await factory.createAdapter(dbConfig);
+        console.error(`✅ PostgreSQL database adapter created: ${!!this.dbAdapter}`);
+      } else {
+        console.error('🔧 Using SQLite legacy implementation (adapter not fully implemented)');
+        this.dbAdapter = null;
+      }
       
       // For SQLite compatibility, maintain legacy db reference
       if (dbConfig.type === 'sqlite') {
@@ -258,7 +264,7 @@ class RAGKnowledgeGraphManager {
     console.error('🔄 Running database migrations...');
     
     // Use database adapter migrations if available, otherwise fallback to legacy
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       try {
         // Use MultiDbMigrationManager for PostgreSQL
         const migrationManager = new MultiDbMigrationManager(this.dbAdapter);
@@ -338,9 +344,8 @@ class RAGKnowledgeGraphManager {
   // === ORIGINAL MCP FUNCTIONALITY ===
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
-    // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
-      console.error('🐘 Using PostgreSQL adapter for createEntities');
+    // Use database adapter if available
+    if (this.dbAdapter) {
       return await this.dbAdapter.createEntities(entities);
     }
     
@@ -373,7 +378,7 @@ class RAGKnowledgeGraphManager {
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for createRelations');
       await this.dbAdapter.createRelations(relations);
       return relations; // Return the input relations as created
@@ -412,7 +417,7 @@ class RAGKnowledgeGraphManager {
 
   async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for addObservations');
       const observationAdditions = observations.map(obs => ({
         entityName: obs.entityName,
@@ -466,7 +471,7 @@ class RAGKnowledgeGraphManager {
 
   async deleteEntities(entityNames: string[]): Promise<void> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for deleteEntities');
       return await this.dbAdapter.deleteEntities(entityNames);
     }
@@ -546,6 +551,12 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
+    // Use database adapter if available
+     if (this.dbAdapter) {
+      await this.dbAdapter.deleteObservations(deletions);
+      return;
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     for (const deletion of deletions) {
@@ -569,6 +580,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteRelations(relations: Relation[]): Promise<void> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.deleteRelations(relations);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     for (const relation of relations) {
@@ -584,7 +600,7 @@ class RAGKnowledgeGraphManager {
 
   async readGraph(): Promise<KnowledgeGraph> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for readGraph');
       return await this.dbAdapter.readGraph();
     }
@@ -623,8 +639,7 @@ class RAGKnowledgeGraphManager {
     nodeTypesToSearch: Array<'entity' | 'documentChunk'> = ['entity', 'documentChunk']
   ): Promise<KnowledgeGraph & { documentChunks?: any[] }> { // Extend return type for document chunks
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
-      console.error('🐘 Using PostgreSQL adapter for searchNodes');
+    if (this.dbAdapter) {
       return await this.dbAdapter.searchNodes(query, limit);
     }
     
@@ -736,6 +751,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.openNodes(names);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     if (names.length === 0) {
@@ -980,6 +1000,14 @@ class RAGKnowledgeGraphManager {
 
   // Embed all entities in the knowledge graph
   async embedAllEntities(): Promise<{ totalEntities: number; embeddedEntities: number }> {
+    if (this.dbAdapter) {
+      const result = await this.dbAdapter.embedAllEntities();
+      return {
+        totalEntities: result.totalEntities || 0,
+        embeddedEntities: result.embeddedEntities || 0
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error('🔮 Generating embeddings for all entities...');
@@ -1011,6 +1039,48 @@ class RAGKnowledgeGraphManager {
     totalDocumentChunksReEmbedded: number; 
     totalKnowledgeGraphChunksReEmbedded: number; 
   }> {
+    if (this.dbAdapter) {
+      console.error('🚀 Starting full re-embedding process (using database adapter)...');
+      
+      let totalEntitiesReEmbedded = 0;
+      let totalDocumentsProcessed = 0;
+      let totalDocumentChunksReEmbedded = 0;
+      let totalKnowledgeGraphChunksReEmbedded = 0; // Will be 0 for non-SQLite
+
+      // 1. Re-embed all entities
+      const entityEmbeddingResult = await this.embedAllEntities();
+      totalEntitiesReEmbedded = entityEmbeddingResult.embeddedEntities;
+      console.error(`✅ Entities re-embedded: ${totalEntitiesReEmbedded}/${entityEmbeddingResult.totalEntities}`);
+
+      // 2. Re-embed all document chunks
+      console.error('📚 Re-embedding all document chunks...');
+      const documentsResult = await this.listDocuments(false); // Get only IDs
+      const documentIds = documentsResult.documents.map(doc => doc.id);
+      
+      for (const docId of documentIds) {
+        try {
+          console.error(`  📄 Processing document: ${docId}`);
+          const chunkEmbedResult = await this.embedChunks(docId);
+          totalDocumentChunksReEmbedded += chunkEmbedResult.embeddedChunks;
+          totalDocumentsProcessed++;
+        } catch (error) {
+          console.error(`  ❌ Error re-embedding document ${docId}:`, error);
+        }
+      }
+      console.error(`✅ Document chunks re-embedded: ${totalDocumentChunksReEmbedded} chunks across ${totalDocumentsProcessed} documents.`);
+
+      // Note: Knowledge graph chunks are SQLite-specific, so they're skipped for database adapters
+      console.error('ℹ️ Knowledge graph chunks are not supported with database adapters');
+
+      console.error('🚀 Full re-embedding process completed (database adapter mode).');
+      return {
+        totalEntitiesReEmbedded,
+        totalDocumentsProcessed,
+        totalDocumentChunksReEmbedded,
+        totalKnowledgeGraphChunksReEmbedded // 0 for database adapters
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     console.error('🚀 Starting full re-embedding process...');
 
@@ -1551,10 +1621,15 @@ class RAGKnowledgeGraphManager {
 
   async storeDocument(id: string, content: string, metadata: Record<string, any> = {}): Promise<{ id: string; stored: boolean; chunksCreated?: number; chunksEmbedded?: number }> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for storeDocument');
-      await this.dbAdapter.storeDocument(id, content, metadata);
-      return { id, stored: true };
+      const result = await this.dbAdapter.storeDocument(id, content, metadata);
+      return {
+        id: result.id,
+        stored: result.stored,
+        chunksCreated: result.chunksCreated,
+        chunksEmbedded: result.chunksEmbedded
+      };
     }
     
     // SQLite implementation
@@ -1596,6 +1671,10 @@ class RAGKnowledgeGraphManager {
   }
 
   async chunkDocument(documentId: string, options: { maxTokens?: number; overlap?: number } = {}): Promise<{ documentId: string; chunks: Array<{ id: string; text: string; startPos: number; endPos: number }> }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.chunkDocument(documentId, options);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Get document
@@ -1642,7 +1721,7 @@ class RAGKnowledgeGraphManager {
 
   async embedChunks(documentId: string): Promise<{ documentId: string; embeddedChunks: number }> {
     // PostgreSQL database adapter fallback
-    if (this.dbAdapter && dbConfig.type === 'postgresql') {
+    if (this.dbAdapter) {
       console.error('🐘 Using PostgreSQL adapter for embedChunks');
       const result = await this.dbAdapter.embedChunks(documentId);
       return { 
@@ -1702,6 +1781,10 @@ class RAGKnowledgeGraphManager {
     includeCapitalized?: boolean;
     customPatterns?: string[];
   } = {}): Promise<{ documentId: string; terms: string[] }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.extractTerms(documentId, options);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Get document
@@ -1722,6 +1805,14 @@ class RAGKnowledgeGraphManager {
   }
 
   async linkEntitiesToDocument(documentId: string, entityNames: string[]): Promise<{ documentId: string; linkedEntities: number }> {
+    if (this.dbAdapter) {
+      await this.dbAdapter.linkEntitiesToDocument(documentId, entityNames);
+      return {
+        documentId,
+        linkedEntities: entityNames.length
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🔗 Linking entities to document: ${documentId}`);
@@ -1891,6 +1982,20 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteDocuments(documentIds: string | string[]): Promise<{ results: Array<{ documentId: string; deleted: boolean }>; summary: { deleted: number; failed: number; total: number } }> {
+    if (this.dbAdapter) {
+      const result = await this.dbAdapter.deleteDocuments(documentIds);
+      const idsArray = Array.isArray(documentIds) ? documentIds : [documentIds];
+      
+      return {
+        results: idsArray.map(id => ({ documentId: id, deleted: true })),
+        summary: {
+          deleted: result.deleted,
+          failed: result.failed,
+          total: idsArray.length
+        }
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Normalize input to always be an array
@@ -1932,6 +2037,12 @@ class RAGKnowledgeGraphManager {
   }
 
   async listDocuments(includeMetadata = true): Promise<{ documents: Array<{ id: string; metadata?: any; created_at: string }> }> {
+    if (this.dbAdapter) {
+      console.error(`📋 Listing all documents (metadata: ${includeMetadata})`);
+      const docs = await this.dbAdapter.listDocuments(includeMetadata);
+      return { documents: docs };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📋 Listing all documents (metadata: ${includeMetadata})`);
@@ -1954,6 +2065,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async hybridSearch(query: string, limit = 5, useGraph = true): Promise<EnhancedSearchResult[]> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.hybridSearch(query, { limit, useGraph });
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     if (!this.encoding) throw new Error('Tokenizer not initialized');
     
@@ -2150,6 +2266,10 @@ class RAGKnowledgeGraphManager {
 
   // NEW: Get detailed context for a specific chunk
   async getDetailedContext(chunkId: string, includeSurrounding = true): Promise<DetailedContext> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.getDetailedContext(chunkId, includeSurrounding);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📖 Getting detailed context for chunk: ${chunkId}`);
@@ -2238,6 +2358,10 @@ class RAGKnowledgeGraphManager {
   }
 
   async getKnowledgeGraphStats(): Promise<any> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.getKnowledgeGraphStats();
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     const entityStats = this.db.prepare(`
@@ -2300,6 +2424,10 @@ class RAGKnowledgeGraphManager {
 
 
   async rollbackMigration(targetVersion: number): Promise<{ rolledBack: number; currentVersion: number; rolledBackMigrations: Array<{ version: number; description: string }> }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.rollbackMigration(targetVersion);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     const migrationManager = new MigrationManager(this.db);

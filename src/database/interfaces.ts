@@ -43,7 +43,7 @@ export interface DatabaseAdapter {
   deleteRelations(relations: Relation[]): Promise<void>;
 
   // Document Operations
-  storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<void>;
+  storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<StoreDocumentResult>;
   chunkDocument(documentId: string, options?: ChunkOptions): Promise<ChunkResult>;
   embedChunks(documentId: string): Promise<EmbeddingResult>;
   extractTerms(documentId: string, options?: ExtractOptions): Promise<TermResult>;
@@ -58,6 +58,11 @@ export interface DatabaseAdapter {
   // Statistics and Monitoring
   getKnowledgeGraphStats(): Promise<KnowledgeGraphStats>;
   getPerformanceMetrics(): Promise<PerformanceMetrics>;
+
+  // Re-embedding Operations
+  reEmbedEverything?(): Promise<ReEmbedResult>;
+  generateKnowledgeGraphChunks?(): Promise<KnowledgeGraphChunkResult>;
+  embedKnowledgeGraphChunks?(): Promise<EmbeddingResult>;
 }
 
 /**
@@ -273,6 +278,16 @@ export interface TermResult {
   terms: string[];
 }
 
+/**
+ * Store document result interface
+ */
+export interface StoreDocumentResult {
+  id: string;
+  stored: boolean;
+  chunksCreated?: number;
+  chunksEmbedded?: number;
+}
+
 // ============================================================================
 // Search Interfaces
 // ============================================================================
@@ -435,6 +450,24 @@ export interface PoolStats {
   totalCount: number;
   idleCount: number;
   waitingCount: number;
+}
+
+/**
+ * Re-embedding result interface
+ */
+export interface ReEmbedResult {
+  totalEntitiesReEmbedded: number;
+  totalDocumentsProcessed: number;
+  totalDocumentChunksReEmbedded: number;
+  totalKnowledgeGraphChunksReEmbedded: number;
+}
+
+/**
+ * Knowledge graph chunk generation result
+ */
+export interface KnowledgeGraphChunkResult {
+  entityChunks: number;
+  relationshipChunks: number;
 }
 
 /**

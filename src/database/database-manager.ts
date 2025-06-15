@@ -20,6 +20,7 @@ import {
   ChunkResult,
   ExtractOptions,
   TermResult,
+  StoreDocumentResult,
   SearchOptions,
   EnhancedSearchResult,
   DetailedContext,
@@ -385,7 +386,7 @@ export class DatabaseManager {
   }
 
   // Document Operations
-  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<void> {
+  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<StoreDocumentResult> {
     return this.ensureAdapter().storeDocument(id, content, metadata);
   }
 

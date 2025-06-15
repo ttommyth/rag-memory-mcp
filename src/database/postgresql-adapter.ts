@@ -24,6 +24,7 @@ import {
   ChunkResult,
   ExtractOptions,
   TermResult,
+  StoreDocumentResult,
   SearchOptions,
   EnhancedSearchResult,
   DetailedContext,
@@ -36,6 +37,8 @@ import {
   EmbeddingResult,
   DeletionResult,
   RunResult,
+  ReEmbedResult,
+  KnowledgeGraphChunkResult,
   isPostgreSQLConfig,
   DatabaseLogger,
   PoolStats
@@ -1234,109 +1237,206 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
     }
   }
 
-  async searchNodes(query: string, limit?: number): Promise<KnowledgeGraph> {
+  async searchNodes(
+    query: string, 
+    limit = 10, 
+    nodeTypesToSearch: Array<'entity' | 'documentChunk'> = ['entity', 'documentChunk']
+  ): Promise<KnowledgeGraph & { documentChunks?: any[] }> {
     if (!this.pool) throw new Error('Database not initialized');
+    
+    this.logger.info(`Semantic node search: "${query}", types: ${nodeTypesToSearch.join(', ')}`);
     
     const client = await this.pool.connect();
     try {
-      const searchLimit = limit || 10;
-      let entities: Entity[] = [];
-      
-      // Try vector search first if embeddings exist
+      const results: KnowledgeGraph & { documentChunks?: any[] } = { 
+        entities: [], 
+        relations: [], 
+        documentChunks: [] 
+      };
+
+      // Generate query embedding for vector searches
+      let queryEmbedding: Float32Array | null = null;
       try {
-        // Generate query embedding
-        const queryEmbedding = await this.generateEmbedding(query);
-        const embeddingArray = Array.from(queryEmbedding);
+        queryEmbedding = await this.generateEmbedding(query);
+      } catch (error) {
+        this.logger.warn('Failed to generate query embedding, using text search only', error as Error);
+      }
+
+      // Search entities if requested
+      if (nodeTypesToSearch.includes('entity')) {
+        let entities: Entity[] = [];
         
-        // Vector similarity search using pgvector
-        const vectorSearchQuery = `
-          SELECT e.name, e.entity_type, e.observations,
-                 (1 - (ee.embedding <=> $1::vector)) as similarity
-          FROM entities e
-          JOIN entity_embeddings ee ON e.id = ee.entity_id
-          ORDER BY ee.embedding <=> $1::vector
-          LIMIT $2
-        `;
+        // Try vector search first if embeddings available
+        if (queryEmbedding) {
+          try {
+            const embeddingArray = Array.from(queryEmbedding);
+            
+            const vectorSearchQuery = `
+              SELECT e.name, e.entity_type, e.observations,
+                     (1 - (ee.embedding <=> $1::vector)) as similarity
+              FROM entities e
+              JOIN entity_embeddings ee ON e.id = ee.entity_id
+              ORDER BY ee.embedding <=> $1::vector
+              LIMIT $2
+            `;
+            
+            const vectorResult = await client.query(vectorSearchQuery, [
+              JSON.stringify(embeddingArray),
+              limit
+            ]);
+            
+            if (vectorResult.rows.length > 0) {
+              entities = vectorResult.rows.map(row => ({
+                name: row.name,
+                entityType: row.entity_type,
+                observations: this.parseObservations(row.observations),
+                similarity: parseFloat(row.similarity) || 0
+              }));
+            }
+          } catch (vectorError) {
+            this.logger.warn('Vector search failed, falling back to text search', vectorError as Error);
+          }
+        }
         
-        const vectorResult = await client.query(vectorSearchQuery, [
-          JSON.stringify(embeddingArray),
-          searchLimit
-        ]);
-        
-        if (vectorResult.rows.length > 0) {
-          // Convert to Entity format
-          entities = vectorResult.rows.map(row => ({
+        // Fallback: Basic text search on entity names and observations
+        if (entities.length === 0) {
+          const textSearchQuery = `
+            SELECT e.name, e.entity_type, e.observations,
+                   ts_rank(to_tsvector('english', e.name || ' ' || array_to_string(
+                     ARRAY(SELECT jsonb_array_elements_text(e.observations)), ' '
+                   )), plainto_tsquery('english', $1)) as rank
+            FROM entities e
+            WHERE to_tsvector('english', e.name || ' ' || array_to_string(
+              ARRAY(SELECT jsonb_array_elements_text(e.observations)), ' '
+            )) @@ plainto_tsquery('english', $1)
+            ORDER BY rank DESC, e.mentions DESC
+            LIMIT $2
+          `;
+          
+          const result = await client.query(textSearchQuery, [query, limit]);
+          
+          entities = result.rows.map(row => ({
             name: row.name,
             entityType: row.entity_type,
             observations: this.parseObservations(row.observations),
-            similarity: parseFloat(row.similarity) || 0
+            similarity: parseFloat(row.rank) || 0
           }));
         }
-      } catch (vectorError) {
-        // Fall back to text search if vector search fails
-        this.logger.warn('Vector search failed, falling back to text search', vectorError as Error);
+        
+        results.entities = entities;
+
+        // Get relationships between found entities
+        if (entities.length > 0) {
+          const entityNames = entities.map(e => e.name);
+          const relationPlaceholders1 = entityNames.map((_, i) => `$${i + 1}`).join(', ');
+          const relationPlaceholders2 = entityNames.map((_, i) => `$${i + entityNames.length + 1}`).join(', ');
+          
+          const relationsQuery = `
+            SELECT 
+              e1.name as from_name,
+              e2.name as to_name,
+              r.relation_type as "relationType"
+            FROM relationships r
+            JOIN entities e1 ON r.source_entity = e1.id
+            JOIN entities e2 ON r.target_entity = e2.id
+            WHERE e1.name IN (${relationPlaceholders1})
+              AND e2.name IN (${relationPlaceholders2})
+            ORDER BY e1.name, e2.name
+          `;
+          
+          const relationsResult = await client.query(relationsQuery, [...entityNames, ...entityNames]);
+          
+          results.relations = relationsResult.rows.map(row => ({
+            from: row.from_name,
+            to: row.to_name,
+            relationType: row.relationType
+          }));
+        }
+        
+        this.logger.info(`Found ${results.entities.length} entities and ${results.relations.length} related relations`);
+      }
+
+      // Search document chunks if requested
+      if (nodeTypesToSearch.includes('documentChunk')) {
+        const chunkLimit = limit - (results.entities.length); // Adjust limit if entities were found
+        if (chunkLimit > 0) {
+          let documentChunks: any[] = [];
+          
+          // Try vector search first if embeddings available
+          if (queryEmbedding) {
+            try {
+              const embeddingArray = Array.from(queryEmbedding);
+              
+              const chunkVectorQuery = `
+                SELECT 
+                  cm.chunk_id,
+                  cm.document_id,
+                  cm.text,
+                  cm.chunk_type,
+                  (1 - (c.embedding::vector <=> $1::vector)) as similarity,
+                  d.metadata as document_metadata_json
+                FROM chunk_metadata cm
+                JOIN chunks c ON cm.id = c.chunk_metadata_id
+                LEFT JOIN documents d ON cm.document_id = d.id
+                WHERE cm.chunk_type = 'document'
+                ORDER BY c.embedding::vector <=> $1::vector
+                LIMIT $2
+              `;
+              
+              const chunkResult = await client.query(chunkVectorQuery, [
+                JSON.stringify(embeddingArray),
+                chunkLimit
+              ]);
+              
+              if (chunkResult.rows.length > 0) {
+                documentChunks = chunkResult.rows.map(row => ({
+                  chunk_id: row.chunk_id,
+                  document_id: row.document_id,
+                  text: row.text,
+                  similarity: parseFloat(row.similarity) || 0,
+                  document_metadata: row.document_metadata_json ? JSON.parse(row.document_metadata_json) : {}
+                }));
+              }
+            } catch (vectorError) {
+              this.logger.warn('Chunk vector search failed, falling back to text search', vectorError as Error);
+            }
+          }
+          
+          // Fallback: Basic text search on chunk content
+          if (documentChunks.length === 0) {
+            const chunkTextQuery = `
+              SELECT 
+                cm.chunk_id,
+                cm.document_id,
+                cm.text,
+                cm.chunk_type,
+                ts_rank(to_tsvector('english', cm.text), plainto_tsquery('english', $1)) as rank,
+                d.metadata as document_metadata_json
+              FROM chunk_metadata cm
+              LEFT JOIN documents d ON cm.document_id = d.id
+              WHERE cm.chunk_type = 'document'
+                AND to_tsvector('english', cm.text) @@ plainto_tsquery('english', $1)
+              ORDER BY rank DESC
+              LIMIT $2
+            `;
+            
+            const chunkResult = await client.query(chunkTextQuery, [query, chunkLimit]);
+            
+            documentChunks = chunkResult.rows.map(row => ({
+              chunk_id: row.chunk_id,
+              document_id: row.document_id,
+              text: row.text,
+              similarity: parseFloat(row.rank) || 0,
+              document_metadata: row.document_metadata_json ? JSON.parse(row.document_metadata_json) : {}
+            }));
+          }
+          
+          results.documentChunks = documentChunks;
+          this.logger.info(`Found ${documentChunks.length} document chunks`);
+        }
       }
       
-      // Fallback: Basic text search on entity names and observations
-      if (entities.length === 0) {
-        const textSearchQuery = `
-          SELECT e.name, e.entity_type, e.observations,
-                 ts_rank(to_tsvector('english', e.name || ' ' || array_to_string(
-                   ARRAY(SELECT jsonb_array_elements_text(e.observations)), ' '
-                 )), plainto_tsquery('english', $1)) as rank
-          FROM entities e
-          WHERE to_tsvector('english', e.name || ' ' || array_to_string(
-            ARRAY(SELECT jsonb_array_elements_text(e.observations)), ' '
-          )) @@ plainto_tsquery('english', $1)
-          ORDER BY rank DESC, e.mentions DESC
-          LIMIT $2
-        `;
-        
-        const result = await client.query(textSearchQuery, [query, searchLimit]);
-        
-        entities = result.rows.map(row => ({
-          name: row.name,
-          entityType: row.entity_type,
-          observations: this.parseObservations(row.observations),
-          similarity: parseFloat(row.rank) || 0
-        }));
-      }
-      
-      // Get relationships between found entities
-      let relations: Relation[] = [];
-      if (entities.length > 0) {
-        const entityNames = entities.map(e => e.name);
-        const relationPlaceholders1 = entityNames.map((_, i) => `$${i + 1}`).join(', ');
-        const relationPlaceholders2 = entityNames.map((_, i) => `$${i + entityNames.length + 1}`).join(', ');
-        
-        const relationsQuery = `
-          SELECT 
-            e1.name as from_name,
-            e2.name as to_name,
-            r.relation_type as "relationType"
-          FROM relationships r
-          JOIN entities e1 ON r.source_entity = e1.id
-          JOIN entities e2 ON r.target_entity = e2.id
-          WHERE e1.name IN (${relationPlaceholders1})
-            AND e2.name IN (${relationPlaceholders2})
-          ORDER BY e1.name, e2.name
-        `;
-        
-        const relationsResult = await client.query(relationsQuery, [...entityNames, ...entityNames]);
-        
-        relations = relationsResult.rows.map(row => ({
-          from: row.from_name,
-          to: row.to_name,
-          relationType: row.relationType
-        }));
-      }
-      
-      this.logger.info(`Found ${entities.length} entities with ${relations.length} relationships`);
-      
-      return {
-        entities,
-        relations
-      };
+      return results;
     } finally {
       client.release();
     }
@@ -1648,11 +1748,17 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
     }
   }
 
-  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<void> {
+  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<StoreDocumentResult> {
     if (!this.pool) throw new Error('Database not initialized');
     
     const client = await this.pool.connect();
     try {
+      this.logger.debug(`Storing document: ${id}`);
+      
+      // Clean up existing document data (including old chunks and their embeddings)
+      await this.cleanupDocument(client, id);
+      
+      // Store the document
       const insertQuery = `
         INSERT INTO documents (id, content, metadata)
         VALUES ($1, $2, $3)
@@ -1668,6 +1774,35 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
       ]);
       
       this.logger.debug(`Document stored: ${id}`);
+      
+      // Automatically chunk and embed the document (matching SQLite behavior)
+      let chunksCreated = 0;
+      let chunksEmbedded = 0;
+      
+      try {
+        this.logger.debug(`Starting automatic chunking for document: ${id}`);
+        const chunkResult = await this.chunkDocument(id);
+        chunksCreated = chunkResult.chunks.length;
+        this.logger.debug(`Document ${id} chunked: ${chunksCreated} chunks created`);
+        
+        if (chunksCreated > 0) {
+          this.logger.debug(`Starting automatic embedding for document: ${id}`);
+          const embedResult = await this.embedChunks(id);
+          chunksEmbedded = embedResult.embeddedChunks || 0;
+          this.logger.debug(`Document ${id} chunks embedded: ${chunksEmbedded} embeddings created`);
+        }
+      } catch (error) {
+        this.logger.warn(`Error during automatic chunking/embedding for document ${id}:`, error as Error);
+        // Document storage was successful, but chunking/embedding failed. Return partial success.
+      }
+      
+      return {
+        id,
+        stored: true,
+        chunksCreated,
+        chunksEmbedded
+      };
+      
     } catch (error) {
       this.logger.error(`Failed to store document: ${id}`, error as Error);
       throw error;
@@ -1693,6 +1828,11 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
       const maxTokens = options?.maxTokens || 200;
       const overlap = options?.overlap || 20;
       
+      this.logger.debug(`Chunking document: ${documentId} (maxTokens: ${maxTokens}, overlap: ${overlap})`);
+      
+      // Clean up existing chunks (matching SQLite behavior)
+      await this.cleanupDocument(client, documentId);
+      
       // Enhanced chunking with position tracking
       const chunks = this.chunkTextWithPositions(content, maxTokens, overlap);
       
@@ -1709,11 +1849,6 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
             chunk_id, document_id, chunk_index, text, chunk_type, start_pos, end_pos
           )
           VALUES ($1, $2, $3, $4, 'document', $5, $6)
-          ON CONFLICT (chunk_id) DO UPDATE SET
-            text = EXCLUDED.text,
-            chunk_index = EXCLUDED.chunk_index,
-            start_pos = EXCLUDED.start_pos,
-            end_pos = EXCLUDED.end_pos
         `;
         
         await client.query(insertMetadataQuery, [
@@ -2593,5 +2728,299 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
     }
 
     return this.performanceMetrics;
+  }
+
+  async reEmbedEverything(): Promise<ReEmbedResult> {
+    if (!this.pool) throw new Error('Database not initialized');
+    
+    this.logger.info('Starting full re-embedding process...');
+
+    let totalEntitiesReEmbedded = 0;
+    let totalDocumentsProcessed = 0;
+    let totalDocumentChunksReEmbedded = 0;
+    let totalKnowledgeGraphChunksReEmbedded = 0;
+
+    try {
+      // 1. Re-embed all entities
+      this.logger.info('Re-embedding all entities...');
+      const entityEmbeddingResult = await this.embedAllEntities();
+      totalEntitiesReEmbedded = entityEmbeddingResult.embeddedEntities || 0;
+      this.logger.info(`Entities re-embedded: ${totalEntitiesReEmbedded}/${entityEmbeddingResult.totalEntities || 0}`);
+
+      // 2. Re-embed all document chunks
+      this.logger.info('Re-embedding all document chunks...');
+      const documentsResult = await this.listDocuments(false);
+      const documentIds = documentsResult.map(doc => doc.id);
+      
+      for (const docId of documentIds) {
+        try {
+          this.logger.debug(`Processing document: ${docId}`);
+          const chunkEmbedResult = await this.embedChunks(docId);
+          totalDocumentChunksReEmbedded += chunkEmbedResult.embeddedChunks || 0;
+          totalDocumentsProcessed++;
+        } catch (error) {
+          this.logger.error(`Error re-embedding document ${docId}`, error as Error);
+        }
+      }
+      this.logger.info(`Document chunks re-embedded: ${totalDocumentChunksReEmbedded} chunks across ${totalDocumentsProcessed} documents`);
+
+      // 3. Re-embed knowledge graph chunks (if implemented)
+      if (this.generateKnowledgeGraphChunks && this.embedKnowledgeGraphChunks) {
+        this.logger.info('Generating and re-embedding knowledge graph chunks...');
+        await this.generateKnowledgeGraphChunks();
+        const kgChunkEmbedResult = await this.embedKnowledgeGraphChunks();
+        totalKnowledgeGraphChunksReEmbedded = kgChunkEmbedResult.embeddedChunks || 0;
+        this.logger.info(`Knowledge graph chunks re-embedded: ${totalKnowledgeGraphChunksReEmbedded}`);
+      } else {
+        this.logger.info('Knowledge graph chunk operations not implemented - skipping');
+      }
+
+      this.logger.info('Full re-embedding process completed');
+      return {
+        totalEntitiesReEmbedded,
+        totalDocumentsProcessed,
+        totalDocumentChunksReEmbedded,
+        totalKnowledgeGraphChunksReEmbedded,
+      };
+
+    } catch (error) {
+      this.logger.error('Failed to complete re-embedding process', error as Error);
+      throw error;
+    }
+  }
+
+  async generateKnowledgeGraphChunks(): Promise<KnowledgeGraphChunkResult> {
+    if (!this.pool) throw new Error('Database not initialized');
+    
+    this.logger.info('Generating knowledge graph chunks...');
+    
+    const client = await this.pool.connect();
+    try {
+      // Clean up existing knowledge graph chunks
+      await this.cleanupKnowledgeGraphChunks(client);
+      
+      let entityChunks = 0;
+      let relationshipChunks = 0;
+      
+      // Generate entity chunks
+      const entitiesQuery = `
+        SELECT id, name, entity_type, observations 
+        FROM entities
+      `;
+      const entitiesResult = await client.query(entitiesQuery);
+      
+      for (const entity of entitiesResult.rows) {
+        const observations = Array.isArray(entity.observations) ? entity.observations : 
+                           (typeof entity.observations === 'string' ? JSON.parse(entity.observations) : []);
+        const chunkText = this.generateEntityChunkText(entity.name, entity.entity_type, observations);
+        const chunkId = `kg_entity_${entity.id}`;
+        
+        // Store chunk metadata
+        await client.query(`
+          INSERT INTO chunk_metadata (
+            chunk_id, chunk_type, entity_id, chunk_index, text, start_pos, end_pos, metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [
+          chunkId, 
+          'entity', 
+          entity.id, 
+          0, 
+          chunkText, 
+          0, 
+          chunkText.length, 
+          JSON.stringify({
+            entity_name: entity.name,
+            entity_type: entity.entity_type
+          })
+        ]);
+        
+        entityChunks++;
+      }
+      
+      // Generate relationship chunks
+      const relationshipsQuery = `
+        SELECT 
+          r.id,
+          r.relation_type,
+          e1.name as source_name,
+          e2.name as target_name,
+          r.confidence
+        FROM relationships r
+        JOIN entities e1 ON r.source_entity = e1.id
+        JOIN entities e2 ON r.target_entity = e2.id
+      `;
+      const relationshipsResult = await client.query(relationshipsQuery);
+      
+      for (const rel of relationshipsResult.rows) {
+        const chunkText = this.generateRelationshipChunkText(rel.source_name, rel.target_name, rel.relation_type);
+        const chunkId = `kg_relationship_${rel.id}`;
+        
+        // Store chunk metadata
+        await client.query(`
+          INSERT INTO chunk_metadata (
+            chunk_id, chunk_type, relationship_id, chunk_index, text, start_pos, end_pos, metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [
+          chunkId, 
+          'relationship', 
+          rel.id, 
+          0, 
+          chunkText, 
+          0, 
+          chunkText.length, 
+          JSON.stringify({
+            source_entity: rel.source_name,
+            target_entity: rel.target_name,
+            relation_type: rel.relation_type,
+            confidence: rel.confidence
+          })
+        ]);
+        
+        relationshipChunks++;
+      }
+      
+      this.logger.info(`Knowledge graph chunks generated: ${entityChunks} entities, ${relationshipChunks} relationships`);
+      
+      return { entityChunks, relationshipChunks };
+      
+    } catch (error) {
+      this.logger.error('Failed to generate knowledge graph chunks', error as Error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async embedKnowledgeGraphChunks(): Promise<EmbeddingResult> {
+    if (!this.pool) throw new Error('Database not initialized');
+    
+    if (!this.embeddingModel) {
+      this.logger.warn('Embedding model not initialized. Skipping KG chunk embedding.');
+      return { embeddedChunks: 0 };
+    }
+
+    this.logger.info('Embedding knowledge graph chunks...');
+    
+    const client = await this.pool.connect();
+    try {
+      // Get all knowledge graph chunks
+      const chunksQuery = `
+        SELECT cm.id as metadata_id, cm.chunk_id, cm.text
+        FROM chunk_metadata cm
+        WHERE cm.chunk_type IN ('entity', 'relationship')
+      `;
+      
+      const chunksResult = await client.query(chunksQuery);
+      const chunks = chunksResult.rows;
+      
+      if (chunks.length === 0) {
+        return { embeddedChunks: 0 };
+      }
+      
+      let successful = 0;
+      
+      // Process chunks
+      for (const chunk of chunks) {
+        try {
+          // Generate embedding for chunk text
+          const embedding = await this.generateEmbedding(chunk.text);
+          const embeddingArray = Array.from(embedding);
+          
+          // Check if chunk embedding already exists
+          const existsQuery = `
+            SELECT id FROM chunks WHERE chunk_metadata_id = $1
+          `;
+          const existsResult = await client.query(existsQuery, [chunk.metadata_id]);
+          
+          if (existsResult.rows.length === 0) {
+            // Insert new embedding
+            await client.query(`
+              INSERT INTO chunks (chunk_metadata_id, embedding)
+              VALUES ($1, $2)
+            `, [chunk.metadata_id, JSON.stringify(embeddingArray)]);
+          } else {
+            // Update existing embedding
+            await client.query(`
+              UPDATE chunks 
+              SET embedding = $2
+              WHERE chunk_metadata_id = $1
+            `, [chunk.metadata_id, JSON.stringify(embeddingArray)]);
+          }
+          
+          successful++;
+        } catch (error) {
+          this.logger.error(`Failed to embed KG chunk ${chunk.chunk_id}`, error as Error);
+        }
+      }
+      
+      this.logger.info(`Embedded knowledge graph chunks: ${successful}/${chunks.length}`);
+      
+      return { embeddedChunks: successful };
+      
+    } catch (error) {
+      this.logger.error('Failed to embed knowledge graph chunks', error as Error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async cleanupKnowledgeGraphChunks(client: any): Promise<void> {
+    try {
+      // Delete existing knowledge graph chunk embeddings first
+      await client.query(`
+        DELETE FROM chunks 
+        WHERE chunk_metadata_id IN (
+          SELECT id FROM chunk_metadata 
+          WHERE chunk_type IN ('entity', 'relationship')
+        )
+      `);
+      
+      // Delete existing knowledge graph chunk metadata
+      await client.query(`
+        DELETE FROM chunk_metadata 
+        WHERE chunk_type IN ('entity', 'relationship')
+      `);
+      
+      this.logger.debug('Cleaned up existing knowledge graph chunks');
+    } catch (error) {
+      this.logger.error('Failed to cleanup knowledge graph chunks', error as Error);
+      throw error;
+    }
+  }
+
+  private generateEntityChunkText(name: string, entityType: string, observations: string[]): string {
+    const obsText = observations.length > 0 ? observations.join('. ') : 'No observations recorded.';
+    return `Entity: ${name} (Type: ${entityType})\nObservations: ${obsText}`;
+  }
+
+  private generateRelationshipChunkText(source: string, target: string, relationType: string): string {
+    return `Relationship: ${source} --[${relationType}]--> ${target}`;
+  }
+
+  private async cleanupDocument(client: any, documentId: string): Promise<void> {
+    try {
+      this.logger.debug(`Cleaning up document: ${documentId}`);
+      
+      // Delete existing chunk embeddings first (to maintain referential integrity)
+      await client.query(`
+        DELETE FROM chunks 
+        WHERE chunk_metadata_id IN (
+          SELECT id FROM chunk_metadata 
+          WHERE document_id = $1
+        )
+      `, [documentId]);
+      
+      // Delete existing chunk metadata
+      await client.query(`
+        DELETE FROM chunk_metadata 
+        WHERE document_id = $1
+      `, [documentId]);
+      
+      this.logger.debug(`Cleaned up existing chunks for document: ${documentId}`);
+    } catch (error) {
+      this.logger.error(`Failed to cleanup document: ${documentId}`, error as Error);
+      throw error;
+    }
   }
 }

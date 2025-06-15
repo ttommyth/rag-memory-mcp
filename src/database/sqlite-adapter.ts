@@ -1,8 +1,10 @@
 /**
- * SQLite Database Adapter Implementation
+ * SQLite Database Adapter Implementation (Consolidated)
  * 
  * This adapter implements the DatabaseAdapter interface for SQLite databases
  * with sqlite-vec extension support for vector operations.
+ * 
+ * Consolidated from sqlite-adapter.ts and sqlite-adapter-core.ts
  */
 
 import Database from 'better-sqlite3';
@@ -27,6 +29,7 @@ import {
   ChunkResult,
   ExtractOptions,
   TermResult,
+  StoreDocumentResult,
   SearchOptions,
   EnhancedSearchResult,
   DetailedContext,
@@ -39,13 +42,13 @@ import {
   EmbeddingResult,
   DeletionResult,
   RunResult,
+  ReEmbedResult,
+  KnowledgeGraphChunkResult,
   isSQLiteConfig,
   DatabaseLogger
 } from './interfaces.js';
 
 import { DatabaseLogger as Logger } from './logger.js';
-import { SQLiteTransactionManager } from './transaction-manager.js';
-import { SQLiteAdapterCore } from './sqlite-adapter-core.js';
 
 /**
  * SQLite-specific transaction implementation
@@ -174,7 +177,7 @@ class SQLiteTransaction implements Transaction {
 }
 
 /**
- * SQLite Database Adapter
+ * SQLite Database Adapter (Consolidated)
  */
 export class SQLiteAdapter implements DatabaseAdapter {
   private db: Database.Database | null = null;
@@ -184,7 +187,6 @@ export class SQLiteAdapter implements DatabaseAdapter {
   private encoding: any = null;
   private isInitialized: boolean = false;
   private performanceMetrics: PerformanceMetrics;
-  private core: SQLiteAdapterCore | null = null;
 
   constructor(logger?: DatabaseLogger) {
     this.logger = logger || new Logger();
@@ -231,9 +233,6 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
       // Initialize embedding model
       await this.initializeEmbeddingModel();
-
-      // Initialize core operations
-      this.core = new SQLiteAdapterCore(this.db, this.logger);
       
       // Run migrations to ensure schema is up to date
       await this.runMigrations([]);
@@ -374,7 +373,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 
   // ============================================================================
-  // Placeholder Methods (to be implemented)
+  // Migration Methods
   // ============================================================================
 
   async runMigrations(migrations: Migration[]): Promise<MigrationResult> {
@@ -475,107 +474,512 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
+  // ============================================================================
+  // Entity Operations (Consolidated from Core)
+  // ============================================================================
+
   async createEntities(entities: Entity[]): Promise<Entity[]> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.createEntities(entities);
+    this.logger.debug(`Creating ${entities.length} entities`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const insertEntity = this.db.prepare(`
+      INSERT OR REPLACE INTO entities (id, name, entityType, observations, mentions, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const transaction = this.db.transaction((entities: Entity[]) => {
+      for (const entity of entities) {
+        const entityId = `entity_${entity.name.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
+        insertEntity.run(
+          entityId,
+          entity.name,
+          entity.entityType,
+          JSON.stringify(entity.observations),
+          0,
+          JSON.stringify({}),
+          new Date().toISOString()
+        );
+      }
+    });
+
+    try {
+      transaction(entities);
+      this.logger.info(`Successfully created ${entities.length} entities`);
+      return entities;
+    } catch (error) {
+      this.logger.error('Failed to create entities', error as Error);
+      throw error;
+    }
   }
 
   async deleteEntities(entityNames: string[]): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.deleteEntities(entityNames);
+    this.logger.debug(`Deleting ${entityNames.length} entities`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const deleteEntity = this.db.prepare(`DELETE FROM entities WHERE name = ?`);
+    const deleteRelationsBySource = this.db.prepare(`DELETE FROM relationships WHERE source_entity IN (SELECT id FROM entities WHERE name = ?)`);
+    const deleteRelationsByTarget = this.db.prepare(`DELETE FROM relationships WHERE target_entity IN (SELECT id FROM entities WHERE name = ?)`);
+
+    const transaction = this.db.transaction((entityNames: string[]) => {
+      for (const entityName of entityNames) {
+        // Delete relationships first
+        deleteRelationsBySource.run(entityName);
+        deleteRelationsByTarget.run(entityName);
+        
+        // Delete the entity
+        deleteEntity.run(entityName);
+      }
+    });
+
+    try {
+      transaction(entityNames);
+      this.logger.info(`Successfully deleted ${entityNames.length} entities`);
+    } catch (error) {
+      this.logger.error('Failed to delete entities', error as Error);
+      throw error;
+    }
   }
 
   async addObservations(observations: ObservationAddition[]): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.addObservations(observations);
+    this.logger.debug(`Adding observations to ${observations.length} entities`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const getEntity = this.db.prepare('SELECT id, observations FROM entities WHERE name = ?');
+    const updateEntity = this.db.prepare('UPDATE entities SET observations = ? WHERE name = ?');
+
+    const transaction = this.db.transaction((observations: ObservationAddition[]) => {
+      for (const obs of observations) {
+        const entityResult = getEntity.get(obs.entityName);
+        
+        if (entityResult) {
+          const entity = entityResult as { id: string; observations: string };
+          const existingObs = JSON.parse(entity.observations || '[]') as string[];
+          const newObs = obs.contents.filter(content => !existingObs.includes(content));
+          const updatedObs = [...existingObs, ...newObs];
+          
+          updateEntity.run(JSON.stringify(updatedObs), obs.entityName);
+        } else {
+          this.logger.warn(`Entity not found: ${obs.entityName}`);
+        }
+      }
+    });
+
+    try {
+      transaction(observations);
+      this.logger.info(`Successfully added observations to ${observations.length} entities`);
+    } catch (error) {
+      this.logger.error('Failed to add observations', error as Error);
+      throw error;
+    }
   }
 
   async deleteObservations(deletions: ObservationDeletion[]): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.deleteObservations(deletions);
+    this.logger.debug(`Deleting observations from ${deletions.length} entities`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const getEntity = this.db.prepare('SELECT id, observations FROM entities WHERE name = ?');
+    const updateEntity = this.db.prepare('UPDATE entities SET observations = ? WHERE name = ?');
+
+    const transaction = this.db.transaction((deletions: ObservationDeletion[]) => {
+      for (const deletion of deletions) {
+        const entityResult = getEntity.get(deletion.entityName);
+        
+        if (entityResult) {
+          const entity = entityResult as { id: string; observations: string };
+          const existingObs = JSON.parse(entity.observations || '[]') as string[];
+          const updatedObs = existingObs.filter(obs => !deletion.observations.includes(obs));
+          
+          updateEntity.run(JSON.stringify(updatedObs), deletion.entityName);
+        } else {
+          this.logger.warn(`Entity not found: ${deletion.entityName}`);
+        }
+      }
+    });
+
+    try {
+      transaction(deletions);
+      this.logger.info(`Successfully deleted observations from ${deletions.length} entities`);
+    } catch (error) {
+      this.logger.error('Failed to delete observations', error as Error);
+      throw error;
+    }
   }
 
   async searchNodes(query: string, limit?: number): Promise<KnowledgeGraph> {
-    // TODO: Implement node search in SQLite adapter core
-    throw new Error('Search operations not yet implemented in SQLite adapter');
+    // TODO: Implement advanced node search with vector similarity
+    throw new Error('Advanced search operations not yet implemented in SQLite adapter');
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.openNodes(names);
+    this.logger.debug(`Opening ${names.length} nodes`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    if (names.length === 0) {
+      return { entities: [], relations: [] };
+    }
+    
+    try {
+      const placeholders = names.map(() => '?').join(',');
+      
+      const entityRows = this.db.prepare(`
+        SELECT id, name, entityType, observations, mentions, metadata, created_at 
+        FROM entities 
+        WHERE name IN (${placeholders})
+      `).all(...names);
+      
+      const relationRows = this.db.prepare(`
+        SELECT r.id, r.relationType, r.confidence, r.metadata, r.created_at,
+               e1.name as source_name, e2.name as target_name
+        FROM relationships r
+        JOIN entities e1 ON r.source_entity = e1.id
+        JOIN entities e2 ON r.target_entity = e2.id
+        WHERE e1.name IN (${placeholders}) 
+           OR e2.name IN (${placeholders})
+      `).all(...names, ...names);
+
+      const entities: Entity[] = (entityRows as any[]).map(row => ({
+        name: row.name,
+        entityType: row.entityType,
+        observations: JSON.parse(row.observations || '[]')
+      }));
+
+      const relations: Relation[] = (relationRows as any[]).map(row => ({
+        from: row.source_name,
+        to: row.target_name,
+        relationType: row.relationType
+      }));
+
+      this.logger.info(`Retrieved ${entities.length} entities and ${relations.length} relations`);
+      
+      return { entities, relations };
+    } catch (error) {
+      this.logger.error('Failed to open nodes', error as Error);
+      throw error;
+    }
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.readGraph();
+    this.logger.debug('Reading complete knowledge graph');
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    try {
+      const entityRows = this.db.prepare(`
+        SELECT id, name, entityType, observations, mentions, metadata, created_at 
+        FROM entities
+      `).all();
+      
+      const relationRows = this.db.prepare(`
+        SELECT r.id, r.relationType, r.confidence, r.metadata, r.created_at,
+               e1.name as source_name, e2.name as target_name
+        FROM relationships r
+        JOIN entities e1 ON r.source_entity = e1.id
+        JOIN entities e2 ON r.target_entity = e2.id
+      `).all();
+
+      const entities: Entity[] = (entityRows as any[]).map(row => ({
+        name: row.name,
+        entityType: row.entityType,
+        observations: JSON.parse(row.observations || '[]')
+      }));
+
+      const relations: Relation[] = (relationRows as any[]).map(row => ({
+        from: row.source_name,
+        to: row.target_name,
+        relationType: row.relationType
+      }));
+
+      this.logger.info(`Retrieved complete graph: ${entities.length} entities, ${relations.length} relations`);
+      
+      return { entities, relations };
+    } catch (error) {
+      this.logger.error('Failed to read graph', error as Error);
+      throw error;
+    }
   }
 
   async embedAllEntities(): Promise<EmbeddingResult> {
-    // TODO: Implement entity embedding
-    throw new Error('Embedding operations not yet implemented');
+    // TODO: Implement entity embedding with vector storage
+    throw new Error('Entity embedding operations not yet implemented');
   }
 
+  // ============================================================================
+  // Relationship Operations (Consolidated from Core)
+  // ============================================================================
+
   async createRelations(relations: Relation[]): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.createRelations(relations);
+    this.logger.debug(`Creating ${relations.length} relations`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const insertRelation = this.db.prepare(`
+      INSERT OR REPLACE INTO relationships (id, source_entity, target_entity, relationType, confidence, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const getEntityId = this.db.prepare('SELECT id FROM entities WHERE name = ?');
+
+    const transaction = this.db.transaction((relations: Relation[]) => {
+      for (const relation of relations) {
+        // Get entity IDs with null checks
+        const sourceResult = getEntityId.get(relation.from);
+        const targetResult = getEntityId.get(relation.to);
+        
+        if (!sourceResult) {
+          this.logger.warn(`Source entity not found: ${relation.from}`);
+          continue;
+        }
+        
+        if (!targetResult) {
+          this.logger.warn(`Target entity not found: ${relation.to}`);
+          continue;
+        }
+
+        const sourceEntity = sourceResult as { id: string };
+        const targetEntity = targetResult as { id: string };
+        const relationId = `${sourceEntity.id}-${relation.relationType}-${targetEntity.id}`;
+        
+        insertRelation.run(
+          relationId,
+          sourceEntity.id,
+          targetEntity.id,
+          relation.relationType,
+          1.0,
+          JSON.stringify({}),
+          new Date().toISOString()
+        );
+      }
+    });
+
+    try {
+      transaction(relations);
+      this.logger.info(`Successfully created ${relations.length} relations`);
+    } catch (error) {
+      this.logger.error('Failed to create relations', error as Error);
+      throw error;
+    }
   }
 
   async deleteRelations(relations: Relation[]): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.deleteRelations(relations);
+    this.logger.debug(`Deleting ${relations.length} relations`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const deleteRelation = this.db.prepare(`
+      DELETE FROM relationships 
+      WHERE source_entity = (SELECT id FROM entities WHERE name = ?) 
+        AND target_entity = (SELECT id FROM entities WHERE name = ?) 
+        AND relationType = ?
+    `);
+
+    const transaction = this.db.transaction((relations: Relation[]) => {
+      for (const relation of relations) {
+        deleteRelation.run(relation.from, relation.to, relation.relationType);
+      }
+    });
+
+    try {
+      transaction(relations);
+      this.logger.info(`Successfully deleted ${relations.length} relations`);
+    } catch (error) {
+      this.logger.error('Failed to delete relations', error as Error);
+      throw error;
+    }
   }
 
-  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<void> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.storeDocument(id, content, metadata);
+  // ============================================================================
+  // Document Operations (Consolidated from Core)
+  // ============================================================================
+
+  async storeDocument(id: string, content: string, metadata?: Record<string, any>): Promise<StoreDocumentResult> {
+    this.logger.debug(`Storing document: ${id}`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const insertDocument = this.db.prepare(`
+      INSERT OR REPLACE INTO documents (id, content, metadata, created_at)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    try {
+      insertDocument.run(
+        id,
+        content,
+        JSON.stringify(metadata || {}),
+        new Date().toISOString()
+      );
+      
+      this.logger.info(`Successfully stored document: ${id}`);
+      
+      // Note: This basic SQLite core implementation doesn't include automatic 
+      // chunking/embedding. Those features are handled by the main index.ts implementation.
+      return {
+        id,
+        stored: true
+        // chunksCreated and chunksEmbedded are undefined for basic storage
+      };
+    } catch (error) {
+      this.logger.error(`Failed to store document: ${id}`, error as Error);
+      throw error;
+    }
   }
 
   async chunkDocument(documentId: string, options?: ChunkOptions): Promise<ChunkResult> {
-    // TODO: Implement document chunking
-    throw new Error('Document operations not yet implemented');
+    // TODO: Implement document chunking with proper position tracking
+    throw new Error('Document chunking operations not yet implemented');
   }
 
   async embedChunks(documentId: string): Promise<EmbeddingResult> {
-    // TODO: Implement chunk embedding
-    throw new Error('Document operations not yet implemented');
+    // TODO: Implement chunk embedding with vector storage
+    throw new Error('Document embedding operations not yet implemented');
   }
 
   async extractTerms(documentId: string, options?: ExtractOptions): Promise<TermResult> {
-    // TODO: Implement term extraction
-    throw new Error('Document operations not yet implemented');
+    // TODO: Implement term extraction from documents
+    throw new Error('Term extraction operations not yet implemented');
   }
 
   async linkEntitiesToDocument(documentId: string, entityNames: string[]): Promise<void> {
-    // TODO: Implement entity linking
-    throw new Error('Document operations not yet implemented');
+    // TODO: Implement entity-document linking
+    throw new Error('Entity linking operations not yet implemented');
   }
 
   async deleteDocuments(documentIds: string | string[]): Promise<DeletionResult> {
-    // TODO: Implement document deletion
-    throw new Error('Document operations not yet implemented');
+    // TODO: Implement document deletion with cleanup
+    throw new Error('Document deletion operations not yet implemented');
   }
 
   async listDocuments(includeMetadata?: boolean): Promise<DocumentInfo[]> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.listDocuments(includeMetadata);
+    this.logger.debug('Listing documents');
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    try {
+      const query = includeMetadata 
+        ? 'SELECT id, metadata, created_at FROM documents'
+        : 'SELECT id, created_at FROM documents';
+        
+      const rows = this.db.prepare(query).all() as any[];
+      
+      const documents: DocumentInfo[] = rows.map(row => ({
+        id: row.id,
+        metadata: includeMetadata ? JSON.parse(row.metadata || '{}') : undefined,
+        created_at: row.created_at
+      }));
+      
+      this.logger.info(`Retrieved ${documents.length} documents`);
+      return documents;
+    } catch (error) {
+      this.logger.error('Failed to list documents', error as Error);
+      throw error;
+    }
   }
 
+  // ============================================================================
+  // Search Operations
+  // ============================================================================
+
   async hybridSearch(query: string, options?: SearchOptions): Promise<EnhancedSearchResult[]> {
-    // TODO: Implement hybrid search
-    throw new Error('Search operations not yet implemented');
+    // TODO: Implement hybrid search combining vector and text search
+    throw new Error('Hybrid search operations not yet implemented');
   }
 
   async getDetailedContext(chunkId: string, includeSurrounding?: boolean): Promise<DetailedContext> {
-    // TODO: Implement detailed context retrieval
-    throw new Error('Context operations not yet implemented');
+    // TODO: Implement detailed context retrieval for chunks
+    throw new Error('Context retrieval operations not yet implemented');
   }
 
+  // ============================================================================
+  // Statistics and Monitoring
+  // ============================================================================
+
   async getKnowledgeGraphStats(): Promise<KnowledgeGraphStats> {
-    if (!this.core) throw new Error('Adapter not initialized');
-    return this.core.getKnowledgeGraphStats();
+    this.logger.debug('Getting knowledge graph statistics');
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    try {
+      // Get counts with proper null handling
+      const entityCount = this.db.prepare('SELECT COUNT(*) as count FROM entities').get() as { count: number } | undefined;
+      const relationCount = this.db.prepare('SELECT COUNT(*) as count FROM relationships').get() as { count: number } | undefined;
+      const documentCount = this.db.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number } | undefined;
+      const chunkCount = this.db.prepare('SELECT COUNT(*) as count FROM chunk_metadata').get() as { count: number } | undefined;
+
+      // Get type breakdowns
+      const entityTypes = this.db.prepare(`
+        SELECT entityType, COUNT(*) as count
+        FROM entities 
+        GROUP BY entityType
+      `).all() as any[];
+
+      const relationTypes = this.db.prepare(`
+        SELECT relationType, COUNT(*) as count
+        FROM relationships 
+        GROUP BY relationType
+      `).all() as any[];
+
+      const entityTypeBreakdown: Record<string, number> = {};
+      entityTypes.forEach(stat => {
+        entityTypeBreakdown[stat.entityType] = stat.count;
+      });
+
+      const relationTypeBreakdown: Record<string, number> = {};
+      relationTypes.forEach(stat => {
+        relationTypeBreakdown[stat.relationType] = stat.count;
+      });
+
+      const stats: KnowledgeGraphStats = {
+        entities: {
+          total: entityCount?.count || 0,
+          byType: entityTypeBreakdown
+        },
+        relationships: {
+          total: relationCount?.count || 0,
+          byType: relationTypeBreakdown
+        },
+        documents: {
+          total: documentCount?.count || 0
+        },
+        chunks: {
+          total: chunkCount?.count || 0,
+          embedded: 0
+        }
+      };
+
+      this.logger.info(`Statistics: ${stats.entities.total} entities, ${stats.relationships.total} relations`);
+      
+      return stats;
+    } catch (error) {
+      this.logger.error('Failed to get statistics', error as Error);
+      throw error;
+    }
   }
 
   async getPerformanceMetrics(): Promise<PerformanceMetrics> {
     return this.performanceMetrics;
+  }
+
+  // ============================================================================
+  // Re-embedding Operations
+  // ============================================================================
+
+  async reEmbedEverything(): Promise<ReEmbedResult> {
+    // TODO: Implement full re-embedding process
+    throw new Error('Re-embedding operations not yet implemented');
+  }
+
+  async generateKnowledgeGraphChunks(): Promise<KnowledgeGraphChunkResult> {
+    // TODO: Implement knowledge graph chunk generation
+    throw new Error('Knowledge graph chunk generation not yet implemented');
+  }
+
+  async embedKnowledgeGraphChunks(): Promise<EmbeddingResult> {
+    // TODO: Implement knowledge graph chunk embedding
+    throw new Error('Knowledge graph chunk embedding not yet implemented');
   }
 }
