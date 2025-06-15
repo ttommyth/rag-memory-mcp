@@ -495,20 +495,8 @@ export class ConnectionPoolManager {
       }
     });
 
-    // Handle process termination
-    process.on('SIGINT', () => {
-      this.logger.info(`Received SIGINT, closing pool: ${name}`);
-      pool.end().catch(error => {
-        this.logger.error(`Error closing pool ${name} on SIGINT:`, error as Error);
-      });
-    });
-
-    process.on('SIGTERM', () => {
-      this.logger.info(`Received SIGTERM, closing pool: ${name}`);
-      pool.end().catch(error => {
-        this.logger.error(`Error closing pool ${name} on SIGTERM:`, error as Error);
-      });
-    });
+    // Note: Process termination handlers are managed at the application level
+    // to prevent premature pool closure during startup
   }
 
   /**
