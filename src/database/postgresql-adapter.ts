@@ -46,6 +46,7 @@ import {
 
 import { DatabaseLogger as Logger } from './logger.js';
 import { ConnectionPoolManager } from './connection-pool-manager.js';
+import { ConnectionHealthMonitor } from './connection-health-monitor.js';
 
 /**
  * PostgreSQL-specific transaction implementation
@@ -182,6 +183,7 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
   private config: DatabaseConfig | null = null;
   private logger: DatabaseLogger;
   private connectionManager: ConnectionPoolManager | null = null;
+  private healthMonitor: ConnectionHealthMonitor | null = null;
   private embeddingModel: any = null;
   private encoding: any = null;
   private isInitialized: boolean = false;
@@ -229,9 +231,19 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
         statement_timeout: config.queryTimeout || 30000
       };
 
-      // Initialize connection pool
-      this.pool = new Pool(poolConfig);
+      // Initialize connection pool manager
       this.connectionManager = new ConnectionPoolManager(this.logger);
+      
+      // Create managed pool
+      this.pool = await this.connectionManager.createPool('default', config);
+      
+      // Initialize health monitoring
+      this.healthMonitor = new ConnectionHealthMonitor(this.pool, this.logger, {
+        checkIntervalMs: 30000, // Check every 30 seconds
+        maxRetries: 3,
+        retryDelayMs: 5000,
+        healthCheckTimeoutMs: 10000
+      });
 
       // Test connection and ensure pgvector extension
       await this.ensurePgvectorExtension();
@@ -246,6 +258,12 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
       await this.initializeEmbeddingModel();
 
       this.isInitialized = true;
+      
+      // Start health monitoring
+      if (this.healthMonitor) {
+        this.healthMonitor.startMonitoring();
+      }
+      
       this.logger.info('PostgreSQL adapter initialized successfully');
 
     } catch (error) {
@@ -272,16 +290,33 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
   async query(sql: string, params?: any[]): Promise<any[]> {
     if (!this.pool) throw new Error('Database not initialized');
     
-    const client = await this.pool.connect();
+    // Use connection manager with retry logic if available
+    let client: PoolClient;
+    if (this.connectionManager) {
+      client = await this.connectionManager.getClientWithRetry('default');
+    } else {
+      client = await this.pool.connect();
+    }
+    
     try {
       const result = await client.query(sql, params);
       return result.rows;
+    } catch (error) {
+      // Log query errors with context
+      this.logger.error('Query execution failed', error as Error, { sql: sql.substring(0, 100), params });
+      throw error;
     } finally {
       client.release();
     }
   }
 
   async close(): Promise<void> {
+    // Stop health monitoring
+    if (this.healthMonitor) {
+      this.healthMonitor.stopMonitoring();
+      this.healthMonitor = null;
+    }
+    
     if (this.pool) {
       await this.pool.end();
       this.pool = null;

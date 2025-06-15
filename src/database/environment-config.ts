@@ -158,8 +158,8 @@ export class EnvironmentConfigManager {
       ssl: process.env.PG_SSL === 'true' ? true : process.env.PG_SSL === 'false' ? false : undefined,
       poolMin: parseInt(process.env.PG_POOL_MIN || '2'),
       poolMax: parseInt(process.env.PG_POOL_MAX || '20'),
-      poolIdleTimeout: parseInt(process.env.PG_POOL_IDLE_TIMEOUT || '30000'),
-      poolConnectionTimeout: parseInt(process.env.PG_POOL_CONNECTION_TIMEOUT || '5000')
+      poolIdleTimeout: parseInt(process.env.PG_POOL_IDLE_TIMEOUT || '300000'), // 5 minutes for better stability
+      poolConnectionTimeout: parseInt(process.env.PG_POOL_CONNECTION_TIMEOUT || '15000') // 15 seconds for slower connections
     };
   }
   
@@ -332,6 +332,6 @@ export const ENVIRONMENT_VARIABLES = {
   PG_SSL: 'PostgreSQL SSL: "true", "false", or undefined for auto (optional)',
   PG_POOL_MIN: 'PostgreSQL minimum pool connections (default: 2)',
   PG_POOL_MAX: 'PostgreSQL maximum pool connections (default: 20)',
-  PG_POOL_IDLE_TIMEOUT: 'PostgreSQL pool idle timeout in ms (default: 30000)',
-  PG_POOL_CONNECTION_TIMEOUT: 'PostgreSQL pool connection timeout in ms (default: 5000)'
+  PG_POOL_IDLE_TIMEOUT: 'PostgreSQL pool idle timeout in ms (default: 300000)',
+  PG_POOL_CONNECTION_TIMEOUT: 'PostgreSQL pool connection timeout in ms (default: 15000)'
 } as const;

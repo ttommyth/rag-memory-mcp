@@ -44,12 +44,18 @@ export class ConnectionPoolManager {
       ssl: config.postgresql.ssl,
       min: config.postgresql.pool?.min || 2,
       max: config.postgresql.pool?.max || 20,
-      idleTimeoutMillis: config.postgresql.pool?.idleTimeoutMillis || 30000,
-      connectionTimeoutMillis: config.postgresql.pool?.connectionTimeoutMillis || 5000,
-      // Additional pool configuration
+      // Use configuration timeouts
+      idleTimeoutMillis: config.postgresql.pool?.idleTimeoutMillis || 600000,
+      connectionTimeoutMillis: config.postgresql.pool?.connectionTimeoutMillis || 15000,
+      // Enhanced keep-alive configuration
       allowExitOnIdle: false,
       keepAlive: true,
-      keepAliveInitialDelayMillis: 10000,
+      keepAliveInitialDelayMillis: 5000, // Start keep-alive sooner
+      // Additional connection stability settings
+      query_timeout: config.queryTimeout || 30000,
+      statement_timeout: config.queryTimeout || 30000,
+      // Connection validation
+      application_name: 'rag-memory-mcp',
     };
 
     const pool = new Pool(poolConfig);
@@ -342,11 +348,129 @@ export class ConnectionPoolManager {
   }
 
   /**
+   * Check if error is a connection-related error that requires recovery
+   */
+  private isConnectionError(error: Error): boolean {
+    const connectionErrorMessages = [
+      'connection terminated',
+      'connection closed',
+      'connection timeout',
+      'server closed the connection',
+      'connection refused',
+      'network error',
+      'timeout expired',
+      'connection lost',
+      'connection reset'
+    ];
+    
+    const errorMessage = error.message.toLowerCase();
+    return connectionErrorMessages.some(msg => errorMessage.includes(msg));
+  }
+  
+  /**
+   * Schedule pool recovery after connection errors
+   */
+  private schedulePoolRecovery(poolName: string): void {
+    // Debounce recovery attempts
+    const recoveryKey = `recovery_${poolName}`;
+    if ((this as any)[recoveryKey]) {
+      return; // Recovery already scheduled
+    }
+    
+    (this as any)[recoveryKey] = setTimeout(async () => {
+      try {
+        this.logger.info(`Attempting pool recovery for: ${poolName}`);
+        await this.recoverPool(poolName);
+        delete (this as any)[recoveryKey];
+      } catch (error) {
+        this.logger.error(`Pool recovery failed for ${poolName}:`, error as Error);
+        delete (this as any)[recoveryKey];
+      }
+    }, 5000); // Wait 5 seconds before recovery
+  }
+  
+  /**
+   * Recover a pool by recreating it
+   */
+  private async recoverPool(poolName: string): Promise<void> {
+    const config = this.configs.get(poolName);
+    if (!config) {
+      throw new Error(`No configuration found for pool: ${poolName}`);
+    }
+    
+    this.logger.info(`Recovering pool: ${poolName}`);
+    
+    // Close existing pool
+    const existingPool = this.pools.get(poolName);
+    if (existingPool) {
+      try {
+        await existingPool.end();
+      } catch (error) {
+        this.logger.warn(`Error closing existing pool during recovery: ${error}`);
+      }
+    }
+    
+    // Create new pool
+    await this.createPool(poolName, config);
+    this.logger.info(`Pool recovery completed: ${poolName}`);
+  }
+  
+  /**
+   * Get a client with automatic retry on connection errors
+   */
+  async getClientWithRetry(poolName: string, maxRetries: number = 3): Promise<PoolClient> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const pool = await this.getPool(poolName);
+        const client = await pool.connect();
+        
+        // Test the connection with a simple query
+        await client.query('SELECT 1');
+        
+        return client;
+      } catch (error) {
+        lastError = error as Error;
+        this.logger.warn(`Connection attempt ${attempt}/${maxRetries} failed:`, error as Error);
+        
+        if (attempt < maxRetries && this.isConnectionError(error as Error)) {
+          // Wait before retry with exponential backoff
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+          this.logger.info(`Retrying connection in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          
+          // Trigger pool recovery if this is a connection error
+          this.schedulePoolRecovery(poolName);
+        }
+      }
+    }
+    
+    throw new Error(`Failed to get client after ${maxRetries} attempts: ${lastError?.message}`);
+  }
+
+  /**
    * Set up event handlers for a pool
    */
   private setupPoolEventHandlers(pool: Pool, name: string): void {
     pool.on('connect', (client) => {
       this.logger.debug(`New client connected to pool: ${name}`);
+      
+      // Set up client-level keep-alive and error handling
+      client.on('error', (err) => {
+        this.logger.error(`Client error in pool ${name}:`, err);
+        // Force client removal from pool on error
+        client.release(err);
+      });
+      
+      // Configure client connection settings for stability
+      client.query('SET statement_timeout = 300000').catch(err => {
+        this.logger.warn(`Failed to set statement_timeout on client: ${err.message}`);
+      });
+      
+      client.query('SET idle_in_transaction_session_timeout = 600000').catch(err => {
+        this.logger.warn(`Failed to set idle_in_transaction_session_timeout on client: ${err.message}`);
+      });
     });
 
     pool.on('acquire', (client) => {
@@ -363,6 +487,12 @@ export class ConnectionPoolManager {
 
     pool.on('error', (err, client) => {
       this.logger.error(`Pool error in ${name}:`, err);
+      
+      // Handle specific connection errors that require pool recreation
+      if (this.isConnectionError(err)) {
+        this.logger.warn(`Connection error detected, will attempt pool recovery: ${err.message}`);
+        this.schedulePoolRecovery(name);
+      }
     });
 
     // Handle process termination
