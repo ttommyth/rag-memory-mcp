@@ -271,6 +271,161 @@ docker run --name rag-postgres \
 - `SQLITE_BUSY_TIMEOUT`: SQLite busy timeout in ms (default: 5000)
 - `SQLITE_CACHE_SIZE`: SQLite cache size in KB (default: -2000)
 
+## 🔄 Database Migration
+
+The server includes a comprehensive migration system for moving data from SQLite to PostgreSQL with complete data integrity.
+
+### Migration Features
+
+- **✅ Complete Data Transfer**: Entities, relationships, documents with full content
+- **✅ SSL Support**: Works with cloud PostgreSQL providers (Aiven, AWS RDS, Google Cloud SQL)
+- **✅ Vector Re-embedding**: Automatically re-embeds all content for optimal search performance
+- **✅ Data Validation**: Comprehensive validation and consistency checking
+- **✅ Production Ready**: Handles large datasets with proper connection pooling
+
+### Quick Migration Guide
+
+#### 1. Install and Build
+```bash
+# Clone or ensure you have the latest version
+npm install
+npm run build
+```
+
+#### 2. Run Migration
+```bash
+# Basic migration command
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=/path/to/your/memory.db \
+  --pg-host=your-postgres-host \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### 3. Validate Results
+```bash
+# Verify migration success
+node dist/src/database/migration-cli.js validate \
+  --sqlite-file=/path/to/your/memory.db \
+  --pg-host=your-postgres-host \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+### Migration CLI Commands
+
+#### `status` - Check Migration Status
+```bash
+node dist/src/database/migration-cli.js status --sqlite-file=./memory.db
+node dist/src/database/migration-cli.js status --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass
+```
+
+#### `migrate` - Run Schema Migrations
+```bash
+node dist/src/database/migration-cli.js migrate --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass
+```
+
+#### `transfer` - Complete Data Migration
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass --pg-ssl=true
+```
+
+#### `validate` - Verify Data Consistency
+```bash
+node dist/src/database/migration-cli.js validate \
+  --sqlite-file=./memory.db \
+  --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass --pg-ssl=true
+```
+
+### Cloud Provider Examples
+
+#### Aiven PostgreSQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-project.aivencloud.com \
+  --pg-port=11910 \
+  --pg-db=your_database \
+  --pg-user=avnadmin \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### AWS RDS PostgreSQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-instance.region.rds.amazonaws.com \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### Google Cloud SQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-ip-address \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+### Migration Process
+
+The migration follows this sequence:
+
+1. **🔗 Connection Setup**: Establishes SSL connections to both databases
+2. **📋 Schema Deployment**: Creates PostgreSQL schema with pgvector extensions
+3. **👥 Entity Transfer**: Migrates all entities with observations and metadata
+4. **🔗 Relationship Transfer**: Preserves all entity relationships
+5. **📄 Document Transfer**: Transfers documents with complete content
+6. **🔍 Vector Re-embedding**: Re-embeds all content for optimal search performance
+7. **✅ Validation**: Verifies data consistency and completeness
+
+### Expected Results
+
+After successful migration, you should see:
+
+- **Entities**: 100% transfer rate with all observations
+- **Relationships**: 100% transfer rate maintaining graph structure  
+- **Documents**: 100% transfer rate with full content (not just metadata)
+- **Chunks**: Enhanced chunking (often more chunks than source due to better optimization)
+- **Embeddings**: Fresh embeddings for all entities and document chunks
+
+### Troubleshooting
+
+#### SSL Connection Issues
+```bash
+# For self-signed certificates, SSL is handled automatically
+# If you encounter certificate issues, ensure --pg-ssl=true is set
+```
+
+#### Large Dataset Migration
+```bash
+# The migration handles large datasets automatically
+# Monitor progress through detailed logging
+# Typical migration time: 2-5 minutes for 100+ entities and 50+ documents
+```
+
+#### Memory Usage
+```bash
+# The migration processes documents individually to minimize memory usage
+# No special configuration needed for large document collections
+```
+
 ## Development Setup
 
 This section is for developers looking to modify or contribute to the server.
