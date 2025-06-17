@@ -342,11 +342,14 @@ export class DocumentTransferOperation extends BaseDataTransferOperation {
       // Transfer each document individually to handle large content
       for (const docInfo of documents) {
         try {
-          // Get full document content (this would need to be implemented in adapters)
-          // For now, we'll assume the document content is available
+          // Get full document content from source database
+          const content = await this.sourceAdapter.getDocumentContent(docInfo.id);
+          
+          this.logger.debug(`Transferring document: ${docInfo.id} (${content.length} chars)`);
+          
           await this.targetAdapter.storeDocument(
             docInfo.id,
-            '', // Content would need to be retrieved from source
+            content, // Use actual content instead of empty string
             docInfo.metadata
           );
           transferredCount++;

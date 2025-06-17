@@ -393,6 +393,7 @@ class MigrationCli {
     console.log('    --pg-db=<database>       PostgreSQL database name');
     console.log('    --pg-user=<username>     PostgreSQL username');
     console.log('    --pg-pass=<password>     PostgreSQL password');
+    console.log('    --pg-ssl=<true/false>    Enable SSL connection (default: false)');
 
     console.log('\nExamples:');
     console.log('  migration-cli status --sqlite-file=./memory.db');
@@ -444,6 +445,7 @@ class MigrationCli {
     const database = this.getArgValue(args, '--pg-db');
     const username = this.getArgValue(args, '--pg-user');
     const password = this.getArgValue(args, '--pg-pass');
+    const ssl = this.getArgValue(args, '--pg-ssl');
 
     if (!host || !port || !database || !username || !password) {
       throw new Error('PostgreSQL configuration requires: --pg-host, --pg-port, --pg-db, --pg-user, --pg-pass');
@@ -458,6 +460,7 @@ class MigrationCli {
         database,
         username,
         password,
+        ssl: ssl === 'true' || ssl === '1' ? { rejectUnauthorized: false } : false,
         pool: {
           min: 2,
           max: 20,

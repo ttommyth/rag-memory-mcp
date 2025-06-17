@@ -50,6 +50,7 @@ export interface DatabaseAdapter {
   linkEntitiesToDocument(documentId: string, entityNames: string[]): Promise<void>;
   deleteDocuments(documentIds: string | string[]): Promise<DeletionResult>;
   listDocuments(includeMetadata?: boolean): Promise<DocumentInfo[]>;
+  getDocumentContent(documentId: string): Promise<string>;
 
   // Search Operations
   hybridSearch(query: string, options?: SearchOptions): Promise<EnhancedSearchResult[]>;

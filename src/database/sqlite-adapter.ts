@@ -880,6 +880,27 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
+  async getDocumentContent(documentId: string): Promise<string> {
+    this.logger.debug(`Getting document content: ${documentId}`);
+    
+    if (!this.db) throw new Error('Database not initialized');
+    
+    try {
+      const stmt = this.db.prepare('SELECT content FROM documents WHERE id = ?');
+      const row = stmt.get(documentId) as any;
+      
+      if (!row) {
+        throw new Error(`Document not found: ${documentId}`);
+      }
+      
+      this.logger.debug(`Retrieved document content: ${documentId} (${row.content.length} chars)`);
+      return row.content;
+    } catch (error) {
+      this.logger.error(`Failed to get document content: ${documentId}`, error as Error);
+      throw error;
+    }
+  }
+
   // ============================================================================
   // Search Operations
   // ============================================================================

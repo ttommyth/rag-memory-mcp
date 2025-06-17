@@ -2399,6 +2399,30 @@ export class PostgreSQLAdapter implements DatabaseAdapter {
     }
   }
 
+  async getDocumentContent(documentId: string): Promise<string> {
+    this.logger.debug(`Getting document content: ${documentId}`);
+    
+    if (!this.pool) throw new Error('Database not initialized');
+    
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query('SELECT content FROM documents WHERE id = $1', [documentId]);
+      
+      if (result.rows.length === 0) {
+        throw new Error(`Document not found: ${documentId}`);
+      }
+      
+      const content = result.rows[0].content;
+      this.logger.debug(`Retrieved document content: ${documentId} (${content.length} chars)`);
+      return content;
+    } catch (error) {
+      this.logger.error(`Failed to get document content: ${documentId}`, error as Error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async hybridSearch(query: string, options?: SearchOptions): Promise<EnhancedSearchResult[]> {
     if (!this.pool) throw new Error('Database not initialized');
     
