@@ -258,7 +258,45 @@ export class ConfigManager {
   private parseSSLConfig(sslEnv?: string): boolean | object | undefined {
     if (!sslEnv) return undefined;
     
-    if (sslEnv === 'true') return true;
+    if (sslEnv === 'true') {
+      // Check if we should reject unauthorized certificates (default: true for security)
+      const rejectUnauthorized = process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false';
+      
+      // Support for certificate files
+      const sslConfig: any = { rejectUnauthorized };
+      
+      // CA Certificate (Certificate Authority)
+      if (process.env.PG_SSL_CA_FILE) {
+        try {
+          const fs = require('fs');
+          sslConfig.ca = fs.readFileSync(process.env.PG_SSL_CA_FILE, 'utf8');
+        } catch (error) {
+          throw new Error(`Failed to read CA certificate file: ${process.env.PG_SSL_CA_FILE}`);
+        }
+      }
+      
+      // Client Certificate (for mutual TLS)
+      if (process.env.PG_SSL_CERT_FILE) {
+        try {
+          const fs = require('fs');
+          sslConfig.cert = fs.readFileSync(process.env.PG_SSL_CERT_FILE, 'utf8');
+        } catch (error) {
+          throw new Error(`Failed to read client certificate file: ${process.env.PG_SSL_CERT_FILE}`);
+        }
+      }
+      
+      // Client Private Key (for mutual TLS)
+      if (process.env.PG_SSL_KEY_FILE) {
+        try {
+          const fs = require('fs');
+          sslConfig.key = fs.readFileSync(process.env.PG_SSL_KEY_FILE, 'utf8');
+        } catch (error) {
+          throw new Error(`Failed to read client key file: ${process.env.PG_SSL_KEY_FILE}`);
+        }
+      }
+      
+      return sslConfig;
+    }
     if (sslEnv === 'false') return false;
     
     try {

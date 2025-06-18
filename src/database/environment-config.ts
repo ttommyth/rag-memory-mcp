@@ -36,7 +36,7 @@ export interface EnvironmentConfig {
     database: string;
     username: string;
     password: string;
-    ssl: boolean | undefined;
+    ssl: boolean | { rejectUnauthorized: boolean } | undefined;
     poolMin: number;
     poolMax: number;
     poolIdleTimeout: number;
@@ -155,12 +155,51 @@ export class EnvironmentConfigManager {
       database: process.env.PG_DATABASE!,
       username: process.env.PG_USERNAME!,
       password: process.env.PG_PASSWORD!,
-      ssl: process.env.PG_SSL === 'true' ? true : process.env.PG_SSL === 'false' ? false : undefined,
+      ssl: this.buildSSLConfig(),
       poolMin: parseInt(process.env.PG_POOL_MIN || '2'),
       poolMax: parseInt(process.env.PG_POOL_MAX || '20'),
       poolIdleTimeout: parseInt(process.env.PG_POOL_IDLE_TIMEOUT || '300000'), // 5 minutes for better stability
       poolConnectionTimeout: parseInt(process.env.PG_POOL_CONNECTION_TIMEOUT || '15000') // 15 seconds for slower connections
     };
+  }
+  
+  /**
+   * Build SSL configuration with support for certificate files
+   */
+  private static buildSSLConfig(): any {
+    const sslEnv = process.env.PG_SSL;
+    
+    if (sslEnv === 'false') return false;
+    if (sslEnv !== 'true') return undefined;
+    
+    // Start with basic SSL configuration
+    const rejectUnauthorized = process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false';
+    const sslConfig: any = { rejectUnauthorized };
+    
+    // Support for certificate files
+    try {
+      // CA Certificate (Certificate Authority)
+      if (process.env.PG_SSL_CA_FILE) {
+        const fs = require('fs');
+        sslConfig.ca = fs.readFileSync(process.env.PG_SSL_CA_FILE, 'utf8');
+      }
+      
+      // Client Certificate (for mutual TLS)
+      if (process.env.PG_SSL_CERT_FILE) {
+        const fs = require('fs');
+        sslConfig.cert = fs.readFileSync(process.env.PG_SSL_CERT_FILE, 'utf8');
+      }
+      
+      // Client Private Key (for mutual TLS)
+      if (process.env.PG_SSL_KEY_FILE) {
+        const fs = require('fs');
+        sslConfig.key = fs.readFileSync(process.env.PG_SSL_KEY_FILE, 'utf8');
+      }
+    } catch (error) {
+      throw new Error(`Failed to read SSL certificate file: ${(error as Error).message}`);
+    }
+    
+    return sslConfig;
   }
   
   /**
@@ -330,8 +369,12 @@ export const ENVIRONMENT_VARIABLES = {
   PG_USERNAME: 'PostgreSQL username (required for PostgreSQL)',
   PG_PASSWORD: 'PostgreSQL password (required for PostgreSQL)',
   PG_SSL: 'PostgreSQL SSL: "true", "false", or undefined for auto (optional)',
+  PG_SSL_REJECT_UNAUTHORIZED: 'Reject unauthorized SSL certificates: "true" (default, secure), "false" (for self-signed certs)',
   PG_POOL_MIN: 'PostgreSQL minimum pool connections (default: 2)',
   PG_POOL_MAX: 'PostgreSQL maximum pool connections (default: 20)',
   PG_POOL_IDLE_TIMEOUT: 'PostgreSQL pool idle timeout in ms (default: 300000)',
-  PG_POOL_CONNECTION_TIMEOUT: 'PostgreSQL pool connection timeout in ms (default: 15000)'
+  PG_POOL_CONNECTION_TIMEOUT: 'PostgreSQL pool connection timeout in ms (default: 15000)',
+  PG_SSL_CA_FILE: 'Path to CA certificate file for SSL verification (optional)',
+  PG_SSL_CERT_FILE: 'Path to client certificate file for mutual TLS (optional)',
+  PG_SSL_KEY_FILE: 'Path to client private key file for mutual TLS (optional)'
 } as const;
