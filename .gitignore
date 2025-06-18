@@ -16,6 +16,11 @@ dist/
 .env.test.local
 .env.production.local
 
+# Sensitive files (contain passwords/credentials)
+refactor.json
+CLAUDE.md
+check-indexes.js
+
 # Logs
 logs
 *.log
