@@ -1,0 +1,96 @@
+{
+  "default": "development",
+  "configurations": {
+    "development": {
+      "type": "sqlite",
+      "vectorDimensions": 384,
+      "enableLogging": true,
+      "queryTimeout": 30000,
+      "sqlite": {
+        "filePath": "./data/rag-memory-dev.db",
+        "enableWAL": true,
+        "pragmas": {
+          "cache_size": -32000,
+          "temp_store": "memory",
+          "synchronous": "normal",
+          "mmap_size": 268435456
+        }
+      }
+    },
+    "production": {
+      "type": "postgresql",
+      "vectorDimensions": 384,
+      "enableLogging": false,
+      "queryTimeout": 15000,
+      "postgresql": {
+        "host": "localhost",
+        "port": 5432,
+        "database": "rag_memory",
+        "username": "rag_user",
+        "password": "secure_production_password",
+        "ssl": true,
+        "pool": {
+          "min": 5,
+          "max": 50,
+          "idleTimeoutMillis": 30000,
+          "connectionTimeoutMillis": 5000
+        }
+      }
+    },
+    "test": {
+      "type": "sqlite",
+      "vectorDimensions": 384,
+      "enableLogging": false,
+      "queryTimeout": 5000,
+      "sqlite": {
+        "filePath": ":memory:",
+        "enableWAL": false,
+        "pragmas": {
+          "cache_size": -16000,
+          "temp_store": "memory",
+          "synchronous": "off"
+        }
+      }
+    },
+    "staging": {
+      "type": "postgresql",
+      "vectorDimensions": 384,
+      "enableLogging": true,
+      "queryTimeout": 20000,
+      "postgresql": {
+        "host": "staging-db.example.com",
+        "port": 5432,
+        "database": "rag_memory_staging",
+        "username": "rag_user",
+        "password": "staging_password",
+        "ssl": true,
+        "pool": {
+          "min": 3,
+          "max": 30,
+          "idleTimeoutMillis": 30000,
+          "connectionTimeoutMillis": 5000
+        }
+      }
+    },
+    "docker": {
+      "type": "postgresql",
+      "vectorDimensions": 384,
+      "enableLogging": true,
+      "queryTimeout": 20000,
+      "postgresql": {
+        "host": "postgres",
+        "port": 5432,
+        "database": "rag_memory",
+        "username": "rag_user",
+        "password": "rag_secure_password",
+        "ssl": false,
+        "pool": {
+          "min": 3,
+          "max": 25,
+          "idleTimeoutMillis": 30000,
+          "connectionTimeoutMillis": 5000
+        }
+      }
+    }
+  }
+}

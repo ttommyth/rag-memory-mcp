@@ -20,19 +20,80 @@ import { getAllMCPTools, validateToolArgs, getSystemInfo } from './src/tools/too
 // Import migration system
 import { MigrationManager } from './src/migrations/migration-manager.js';
 import { migrations } from './src/migrations/migrations.js';
+import { MultiDbMigrationManager } from './src/database/multi-db-migration-manager.js';
+import { multiDbMigrations } from './src/database/multi-db-migrations.js';
+
+// Import database abstraction layer
+import { DatabaseFactory } from './src/database/database-factory.js';
+import { ConfigManager } from './src/database/config-manager.js';
+import { DatabaseAdapter, DatabaseConfig } from './src/database/interfaces.js';
 
 // Configure Hugging Face transformers for better compatibility
 if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = './node_modules/@huggingface/transformers/dist/';
 }
 
-// Define database file path using environment variable with fallback
-const defaultDbPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rag-memory.db');
-const DB_FILE_PATH = process.env.DB_FILE_PATH
-  ? path.isAbsolute(process.env.DB_FILE_PATH)
-    ? process.env.DB_FILE_PATH
-    : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.DB_FILE_PATH)
-  : defaultDbPath;
+// Database configuration setup - now using database factory with environment-based selection
+const configManager = new ConfigManager();
+let dbConfig: DatabaseConfig;
+
+// Enhanced DB_TYPE environment variable handling with better error messages
+const dbType = process.env.DB_TYPE?.toLowerCase();
+console.error(`🔧 Database Type Configuration: ${dbType || 'not set (defaulting to SQLite)'}`);  
+
+// Load database configuration based on DB_TYPE environment variable
+if (dbType && dbType !== 'sqlite') {
+  // User explicitly requested a specific database type
+  try {
+    dbConfig = configManager.loadFromEnvironment();
+    console.error(`✅ Database configuration loaded successfully: ${dbConfig.type}`);
+  } catch (error) {
+    console.error(`❌ Failed to load ${dbType.toUpperCase()} configuration from environment variables:`);
+    console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+    
+    if (dbType === 'postgresql') {
+      console.error(`   Required PostgreSQL environment variables:`);
+      console.error(`   - PG_HOST (PostgreSQL server host)`);
+      console.error(`   - PG_PORT (PostgreSQL server port, e.g., 5432)`);
+      console.error(`   - PG_DATABASE (database name)`);
+      console.error(`   - PG_USERNAME (database username)`);
+      console.error(`   - PG_PASSWORD (database password)`);
+      console.error(`   Optional: PG_SSL (SSL configuration)`);
+    }
+    
+    console.error(`   Falling back to SQLite for compatibility`);
+    dbConfig = createSQLiteFallbackConfig();
+  }
+} else {
+  // No DB_TYPE specified or explicitly SQLite - use SQLite with environment customization
+  console.error('📋 Using SQLite database (default or DB_TYPE=sqlite)');
+  dbConfig = createSQLiteFallbackConfig();
+}
+
+// Helper function to create SQLite fallback configuration
+function createSQLiteFallbackConfig(): DatabaseConfig {
+  const defaultDbPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'rag-memory.db');
+  const DB_FILE_PATH = process.env.DB_FILE_PATH
+    ? path.isAbsolute(process.env.DB_FILE_PATH)
+      ? process.env.DB_FILE_PATH
+      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.DB_FILE_PATH)
+    : defaultDbPath;
+  
+  console.error(`📁 SQLite database path: ${DB_FILE_PATH}`);
+  
+  return {
+    type: 'sqlite',
+    vectorDimensions: parseInt(process.env.VECTOR_DIMENSIONS || '384'),
+    sqlite: {
+      filePath: DB_FILE_PATH,
+      enableWAL: process.env.SQLITE_ENABLE_WAL !== 'false',
+      pragmas: {
+        busy_timeout: parseInt(process.env.SQLITE_BUSY_TIMEOUT || '5000'),
+        cache_size: parseInt(process.env.SQLITE_CACHE_SIZE || '-2000')
+      }
+    }
+  };
+}
 
 // Original MCP interfaces
 interface Entity {
@@ -122,6 +183,7 @@ interface DetailedContext {
 
 // Enhanced RAG-enabled Knowledge Graph Manager
 class RAGKnowledgeGraphManager {
+  private dbAdapter: DatabaseAdapter | null = null;
   private db: Database.Database | null = null;
   private encoding: any = null;
   private embeddingModel: any = null;
@@ -130,11 +192,31 @@ class RAGKnowledgeGraphManager {
   async initialize() {
     console.error('🚀 Initializing RAG Knowledge Graph MCP Server...');
     
-    // Initialize database
-    this.db = new Database(DB_FILE_PATH);
-    
-    // Load sqlite-vec extension
-    sqliteVec.load(this.db);
+    try {
+      // Initialize database using factory pattern for PostgreSQL only
+      // SQLite adapter has incomplete implementation, so use legacy path
+      if (dbConfig.type === 'postgresql') {
+        console.error('🔧 Creating PostgreSQL database adapter...');
+        const factory = DatabaseFactory.getInstance();
+        this.dbAdapter = await factory.createAdapter(dbConfig);
+        console.error(`✅ PostgreSQL database adapter created: ${!!this.dbAdapter}`);
+      } else {
+        console.error('🔧 Using SQLite legacy implementation (adapter not fully implemented)');
+        this.dbAdapter = null;
+      }
+      
+      // For SQLite compatibility, maintain legacy db reference
+      if (dbConfig.type === 'sqlite') {
+        this.db = new Database((dbConfig as any).sqlite.filePath);
+        sqliteVec.load(this.db);
+        console.error('✅ SQLite database with vector extension loaded');
+      }
+      
+      console.error('✅ Database initialization completed');
+    } catch (error) {
+      console.error('❌ Database initialization failed:', error);
+      throw error;
+    }
     
     // Initialize tiktoken
     this.encoding = get_encoding("cl100k_base");
@@ -179,34 +261,64 @@ class RAGKnowledgeGraphManager {
   }
 
   async runMigrations(): Promise<{ applied: number; currentVersion: number; appliedMigrations: Array<{ version: number; description: string }> }> {
-    if (!this.db) throw new Error('Database not initialized');
-
     console.error('🔄 Running database migrations...');
     
-    // Initialize migration manager
-    const migrationManager = new MigrationManager(this.db);
-    
-    // Add all migrations
-    migrations.forEach(migration => {
-      migrationManager.addMigration(migration);
-    });
-    
-    // Get pending migrations before running them
-    const pendingBefore = migrationManager.getPendingMigrations();
-    
-    // Run pending migrations
-    const result = await migrationManager.runMigrations();
-    
-    console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
-    
-    return {
-      applied: result.applied,
-      currentVersion: result.currentVersion,
-      appliedMigrations: pendingBefore.slice(0, result.applied).map(m => ({
-        version: m.version,
-        description: m.description
-      }))
-    };
+    // Use database adapter migrations if available, otherwise fallback to legacy
+    if (this.dbAdapter) {
+      try {
+        // Use MultiDbMigrationManager for PostgreSQL
+        const migrationManager = new MultiDbMigrationManager(this.dbAdapter);
+        
+        // Add all multi-database migrations
+        multiDbMigrations.forEach(migration => {
+          migrationManager.addMigration(migration);
+        });
+        
+        const result = await migrationManager.runMigrations();
+        console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
+        
+        return {
+          applied: result.applied,
+          currentVersion: result.currentVersion,
+          appliedMigrations: multiDbMigrations.slice(0, result.applied).map(m => ({
+            version: m.version,
+            description: m.description
+          }))
+        };
+      } catch (error) {
+        console.error('❌ PostgreSQL adapter migration failed:', error);
+        throw error;
+      }
+    } else {
+      // SQLite legacy migration system
+      if (!this.db) {
+        throw new Error('SQLite database not available');
+      }
+      
+      const migrationManager = new MigrationManager(this.db);
+      
+      // Add all migrations
+      migrations.forEach(migration => {
+        migrationManager.addMigration(migration);
+      });
+      
+      // Get pending migrations before running them
+      const pendingBefore = migrationManager.getPendingMigrations();
+      
+      // Run pending migrations
+      const result = await migrationManager.runMigrations();
+      
+      console.error(`🔧 Database schema ready (version ${result.currentVersion}, ${result.applied} migrations applied)`);
+      
+      return {
+        applied: result.applied,
+        currentVersion: result.currentVersion,
+        appliedMigrations: pendingBefore.slice(0, result.applied).map(m => ({
+          version: m.version,
+          description: m.description
+        }))
+      };
+    }
   }
 
   cleanup() {
@@ -219,6 +331,10 @@ class RAGKnowledgeGraphManager {
       this.embeddingModel = null;
       this.modelInitialized = false;
     }
+    if (this.dbAdapter) {
+      this.dbAdapter.close();
+      this.dbAdapter = null;
+    }
     if (this.db) {
       this.db.close();
       this.db = null;
@@ -228,6 +344,12 @@ class RAGKnowledgeGraphManager {
   // === ORIGINAL MCP FUNCTIONALITY ===
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.createEntities(entities);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const newEntities = [];
@@ -255,6 +377,14 @@ class RAGKnowledgeGraphManager {
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for createRelations');
+      await this.dbAdapter.createRelations(relations);
+      return relations; // Return the input relations as created
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const newRelations = [];
@@ -286,6 +416,22 @@ class RAGKnowledgeGraphManager {
   }
 
   async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for addObservations');
+      const observationAdditions = observations.map(obs => ({
+        entityName: obs.entityName,
+        contents: obs.contents
+      }));
+      await this.dbAdapter.addObservations(observationAdditions);
+      // Return expected format for compatibility
+      return observations.map(obs => ({
+        entityName: obs.entityName,
+        addedObservations: obs.contents
+      }));
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const results = [];
@@ -324,6 +470,13 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteEntities(entityNames: string[]): Promise<void> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for deleteEntities');
+      return await this.dbAdapter.deleteEntities(entityNames);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🗑️ Deleting entities: ${entityNames.join(', ')}`);
@@ -398,6 +551,12 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
+    // Use database adapter if available
+     if (this.dbAdapter) {
+      await this.dbAdapter.deleteObservations(deletions);
+      return;
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     for (const deletion of deletions) {
@@ -421,6 +580,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteRelations(relations: Relation[]): Promise<void> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.deleteRelations(relations);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     for (const relation of relations) {
@@ -435,6 +599,13 @@ class RAGKnowledgeGraphManager {
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for readGraph');
+      return await this.dbAdapter.readGraph();
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     const entities = this.db.prepare(`
@@ -467,6 +638,12 @@ class RAGKnowledgeGraphManager {
     limit = 10, 
     nodeTypesToSearch: Array<'entity' | 'documentChunk'> = ['entity', 'documentChunk']
   ): Promise<KnowledgeGraph & { documentChunks?: any[] }> { // Extend return type for document chunks
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      return await this.dbAdapter.searchNodes(query, limit);
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🔍 Semantic node search: "${query}", types: ${nodeTypesToSearch.join(', ')}`);
@@ -574,6 +751,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.openNodes(names);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     if (names.length === 0) {
@@ -818,6 +1000,14 @@ class RAGKnowledgeGraphManager {
 
   // Embed all entities in the knowledge graph
   async embedAllEntities(): Promise<{ totalEntities: number; embeddedEntities: number }> {
+    if (this.dbAdapter) {
+      const result = await this.dbAdapter.embedAllEntities();
+      return {
+        totalEntities: result.totalEntities || 0,
+        embeddedEntities: result.embeddedEntities || 0
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error('🔮 Generating embeddings for all entities...');
@@ -849,6 +1039,48 @@ class RAGKnowledgeGraphManager {
     totalDocumentChunksReEmbedded: number; 
     totalKnowledgeGraphChunksReEmbedded: number; 
   }> {
+    if (this.dbAdapter) {
+      console.error('🚀 Starting full re-embedding process (using database adapter)...');
+      
+      let totalEntitiesReEmbedded = 0;
+      let totalDocumentsProcessed = 0;
+      let totalDocumentChunksReEmbedded = 0;
+      let totalKnowledgeGraphChunksReEmbedded = 0; // Will be 0 for non-SQLite
+
+      // 1. Re-embed all entities
+      const entityEmbeddingResult = await this.embedAllEntities();
+      totalEntitiesReEmbedded = entityEmbeddingResult.embeddedEntities;
+      console.error(`✅ Entities re-embedded: ${totalEntitiesReEmbedded}/${entityEmbeddingResult.totalEntities}`);
+
+      // 2. Re-embed all document chunks
+      console.error('📚 Re-embedding all document chunks...');
+      const documentsResult = await this.listDocuments(false); // Get only IDs
+      const documentIds = documentsResult.documents.map(doc => doc.id);
+      
+      for (const docId of documentIds) {
+        try {
+          console.error(`  📄 Processing document: ${docId}`);
+          const chunkEmbedResult = await this.embedChunks(docId);
+          totalDocumentChunksReEmbedded += chunkEmbedResult.embeddedChunks;
+          totalDocumentsProcessed++;
+        } catch (error) {
+          console.error(`  ❌ Error re-embedding document ${docId}:`, error);
+        }
+      }
+      console.error(`✅ Document chunks re-embedded: ${totalDocumentChunksReEmbedded} chunks across ${totalDocumentsProcessed} documents.`);
+
+      // Note: Knowledge graph chunks are SQLite-specific, so they're skipped for database adapters
+      console.error('ℹ️ Knowledge graph chunks are not supported with database adapters');
+
+      console.error('🚀 Full re-embedding process completed (database adapter mode).');
+      return {
+        totalEntitiesReEmbedded,
+        totalDocumentsProcessed,
+        totalDocumentChunksReEmbedded,
+        totalKnowledgeGraphChunksReEmbedded // 0 for database adapters
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     console.error('🚀 Starting full re-embedding process...');
 
@@ -1388,6 +1620,19 @@ class RAGKnowledgeGraphManager {
   // === NEW SEPARATE TOOLS ===
 
   async storeDocument(id: string, content: string, metadata: Record<string, any> = {}): Promise<{ id: string; stored: boolean; chunksCreated?: number; chunksEmbedded?: number }> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for storeDocument');
+      const result = await this.dbAdapter.storeDocument(id, content, metadata);
+      return {
+        id: result.id,
+        stored: result.stored,
+        chunksCreated: result.chunksCreated,
+        chunksEmbedded: result.chunksEmbedded
+      };
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📄 Storing document: ${id}`);
@@ -1426,6 +1671,10 @@ class RAGKnowledgeGraphManager {
   }
 
   async chunkDocument(documentId: string, options: { maxTokens?: number; overlap?: number } = {}): Promise<{ documentId: string; chunks: Array<{ id: string; text: string; startPos: number; endPos: number }> }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.chunkDocument(documentId, options);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Get document
@@ -1471,6 +1720,17 @@ class RAGKnowledgeGraphManager {
   }
 
   async embedChunks(documentId: string): Promise<{ documentId: string; embeddedChunks: number }> {
+    // PostgreSQL database adapter fallback
+    if (this.dbAdapter) {
+      console.error('🐘 Using PostgreSQL adapter for embedChunks');
+      const result = await this.dbAdapter.embedChunks(documentId);
+      return { 
+        documentId, 
+        embeddedChunks: result.embeddedChunks || 0 
+      };
+    }
+    
+    // SQLite implementation
     if (!this.db) throw new Error('Database not initialized');
     if (!this.modelInitialized) {
       console.warn('⚠️ Embedding model not initialized. Skipping document chunk embedding.');
@@ -1521,6 +1781,10 @@ class RAGKnowledgeGraphManager {
     includeCapitalized?: boolean;
     customPatterns?: string[];
   } = {}): Promise<{ documentId: string; terms: string[] }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.extractTerms(documentId, options);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Get document
@@ -1541,6 +1805,14 @@ class RAGKnowledgeGraphManager {
   }
 
   async linkEntitiesToDocument(documentId: string, entityNames: string[]): Promise<{ documentId: string; linkedEntities: number }> {
+    if (this.dbAdapter) {
+      await this.dbAdapter.linkEntitiesToDocument(documentId, entityNames);
+      return {
+        documentId,
+        linkedEntities: entityNames.length
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`🔗 Linking entities to document: ${documentId}`);
@@ -1710,6 +1982,20 @@ class RAGKnowledgeGraphManager {
   }
 
   async deleteDocuments(documentIds: string | string[]): Promise<{ results: Array<{ documentId: string; deleted: boolean }>; summary: { deleted: number; failed: number; total: number } }> {
+    if (this.dbAdapter) {
+      const result = await this.dbAdapter.deleteDocuments(documentIds);
+      const idsArray = Array.isArray(documentIds) ? documentIds : [documentIds];
+      
+      return {
+        results: idsArray.map(id => ({ documentId: id, deleted: true })),
+        summary: {
+          deleted: result.deleted,
+          failed: result.failed,
+          total: idsArray.length
+        }
+      };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     // Normalize input to always be an array
@@ -1751,6 +2037,12 @@ class RAGKnowledgeGraphManager {
   }
 
   async listDocuments(includeMetadata = true): Promise<{ documents: Array<{ id: string; metadata?: any; created_at: string }> }> {
+    if (this.dbAdapter) {
+      console.error(`📋 Listing all documents (metadata: ${includeMetadata})`);
+      const docs = await this.dbAdapter.listDocuments(includeMetadata);
+      return { documents: docs };
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📋 Listing all documents (metadata: ${includeMetadata})`);
@@ -1773,6 +2065,11 @@ class RAGKnowledgeGraphManager {
   }
 
   async hybridSearch(query: string, limit = 5, useGraph = true): Promise<EnhancedSearchResult[]> {
+    // Use database adapter if available
+    if (this.dbAdapter) {
+      return await this.dbAdapter.hybridSearch(query, { limit, useGraph });
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     if (!this.encoding) throw new Error('Tokenizer not initialized');
     
@@ -1969,6 +2266,10 @@ class RAGKnowledgeGraphManager {
 
   // NEW: Get detailed context for a specific chunk
   async getDetailedContext(chunkId: string, includeSurrounding = true): Promise<DetailedContext> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.getDetailedContext(chunkId, includeSurrounding);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     console.error(`📖 Getting detailed context for chunk: ${chunkId}`);
@@ -2057,6 +2358,10 @@ class RAGKnowledgeGraphManager {
   }
 
   async getKnowledgeGraphStats(): Promise<any> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.getKnowledgeGraphStats();
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     const entityStats = this.db.prepare(`
@@ -2119,6 +2424,10 @@ class RAGKnowledgeGraphManager {
 
 
   async rollbackMigration(targetVersion: number): Promise<{ rolledBack: number; currentVersion: number; rolledBackMigrations: Array<{ version: number; description: string }> }> {
+    if (this.dbAdapter) {
+      return await this.dbAdapter.rollbackMigration(targetVersion);
+    }
+    
     if (!this.db) throw new Error('Database not initialized');
     
     const migrationManager = new MigrationManager(this.db);

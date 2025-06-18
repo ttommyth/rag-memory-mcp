@@ -8,6 +8,8 @@
 
 An advanced MCP server for **RAG-enabled memory** through a knowledge graph with **vector search** capabilities. This server extends the basic memory concepts with semantic search, document processing, and hybrid retrieval for more intelligent memory management.
 
+**🆕 NEW: Full PostgreSQL Support** - Now supports both SQLite (default) and PostgreSQL databases with automatic adapter switching, production-ready performance optimizations, and pgvector integration for enterprise deployments.
+
 **Inspired by:** [Knowledge Graph Memory Server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) from the Model Context Protocol project.
 
 **Note:** This server is designed to run locally alongside MCP clients (e.g., Claude Desktop, VS Code) and requires local file system access for database storage.
@@ -18,9 +20,12 @@ An advanced MCP server for **RAG-enabled memory** through a knowledge graph with
 - **🔍 Vector Search**: Semantic similarity search using sentence transformers
 - **📄 Document Processing**: RAG-enabled document chunking and embedding
 - **🔗 Hybrid Search**: Combines vector similarity with graph traversal
-- **⚡ SQLite Backend**: Fast local storage with sqlite-vec for vector operations
+- **🗄️ Dual Database Support**: 
+  - **SQLite**: Fast local storage with sqlite-vec for vector operations (default)
+  - **PostgreSQL**: Production-ready with pgvector, JSONB, and advanced indexing
 - **🎯 Entity Extraction**: Automatic term extraction from documents
-- **🔄 Automated Database Migrations**: Ensures database schema is up-to-date automatically on server startup.
+- **🔄 Automated Database Migrations**: Multi-database migration system with schema versioning
+- **⚡ Production Ready**: Connection pooling, transaction management, and performance optimizations
 
 ## Tools
 
@@ -176,9 +181,250 @@ This enables **hybrid search** that combines:
 - Vector similarity (semantic matching)
 - Graph traversal (conceptual relationships)
 
-## Environment Variables
+## Database Configuration
 
-- `DB_FILE_PATH`: Path to the SQLite database file (default: `rag-memory.db` in the server directory. If `DB_FILE_PATH` is relative, it's relative to the server's installation directory).
+This server supports both SQLite and PostgreSQL databases with automatic adapter switching based on environment configuration.
+
+### SQLite (Default)
+Perfect for development and lightweight deployments:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "npx",
+      "args": ["-y", "rag-memory-mcp"],
+      "env": {
+        "DB_TYPE": "sqlite",
+        "DB_FILE_PATH": "/path/to/custom/memory.db"
+      }
+    }
+  }
+}
+```
+
+### PostgreSQL (Production)
+Ideal for production environments with advanced features:
+
+**Benefits:**
+- 🔒 **ACID Compliance**: Full transaction support with rollback capabilities  
+- 📊 **Advanced Types**: JSONB for efficient metadata storage and querying
+- 🔄 **Concurrent Access**: Multi-user support with connection pooling
+- 📈 **Scalability**: Handle larger datasets with better memory management
+- 🛡️ **Production Features**: SSL, authentication, monitoring, and backup support
+- 🚧 **Vector Indexing**: HNSW vector indexes planned for improved search performance
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "npx", 
+      "args": ["-y", "rag-memory-mcp"],
+      "env": {
+        "DB_TYPE": "postgresql",
+        "PG_HOST": "localhost",
+        "PG_PORT": "5432",
+        "PG_DATABASE": "rag_memory",
+        "PG_USERNAME": "your_user",
+        "PG_PASSWORD": "your_password",
+        "PG_SSL": "false"
+      }
+    }
+  }
+}
+```
+
+### Docker PostgreSQL Setup
+Quick start with Docker:
+
+```bash
+# Start PostgreSQL with pgvector
+docker-compose up -d
+
+# Or manually:
+docker run --name rag-postgres \
+  -e POSTGRES_DB=rag_memory \
+  -e POSTGRES_USER=rag_user \
+  -e POSTGRES_PASSWORD=rag_password \
+  -p 5432:5432 \
+  -d pgvector/pgvector:pg16
+```
+
+### Environment Variables
+
+**SQLite Configuration:**
+- `DB_TYPE`: Set to `"sqlite"` (default if not specified)
+- `DB_FILE_PATH`: Path to SQLite database file (default: `rag-memory.db`)
+- `VECTOR_DIMENSIONS`: Vector embedding dimensions (default: 384)
+
+**PostgreSQL Configuration:**
+- `DB_TYPE`: Set to `"postgresql"`
+- `PG_HOST`: PostgreSQL server host
+- `PG_PORT`: PostgreSQL server port (default: 5432)
+- `PG_DATABASE`: Database name
+- `PG_USERNAME`: Database username
+- `PG_PASSWORD`: Database password
+- `PG_SSL`: SSL configuration ("true"/"false", default: "false")
+
+**Performance Tuning:**
+- `SQLITE_ENABLE_WAL`: Enable WAL mode for SQLite (default: true)
+- `SQLITE_BUSY_TIMEOUT`: SQLite busy timeout in ms (default: 5000)
+- `SQLITE_CACHE_SIZE`: SQLite cache size in KB (default: -2000)
+
+## 🔄 Database Migration
+
+The server includes a comprehensive migration system for moving data from SQLite to PostgreSQL with complete data integrity.
+
+### Migration Features
+
+- **✅ Complete Data Transfer**: Entities, relationships, documents with full content
+- **✅ SSL Support**: Works with cloud PostgreSQL providers (Aiven, AWS RDS, Google Cloud SQL)
+- **✅ Vector Re-embedding**: Automatically re-embeds all content for optimal search performance
+- **✅ Data Validation**: Comprehensive validation and consistency checking
+- **✅ Production Ready**: Handles large datasets with proper connection pooling
+
+### Quick Migration Guide
+
+#### 1. Install and Build
+```bash
+# Clone or ensure you have the latest version
+npm install
+npm run build
+```
+
+#### 2. Run Migration
+```bash
+# Basic migration command
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=/path/to/your/memory.db \
+  --pg-host=your-postgres-host \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### 3. Validate Results
+```bash
+# Verify migration success
+node dist/src/database/migration-cli.js validate \
+  --sqlite-file=/path/to/your/memory.db \
+  --pg-host=your-postgres-host \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+### Migration CLI Commands
+
+#### `status` - Check Migration Status
+```bash
+node dist/src/database/migration-cli.js status --sqlite-file=./memory.db
+node dist/src/database/migration-cli.js status --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass
+```
+
+#### `migrate` - Run Schema Migrations
+```bash
+node dist/src/database/migration-cli.js migrate --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass
+```
+
+#### `transfer` - Complete Data Migration
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass --pg-ssl=true
+```
+
+#### `validate` - Verify Data Consistency
+```bash
+node dist/src/database/migration-cli.js validate \
+  --sqlite-file=./memory.db \
+  --pg-host=localhost --pg-port=5432 --pg-db=rag_memory --pg-user=user --pg-pass=pass --pg-ssl=true
+```
+
+### Cloud Provider Examples
+
+#### Aiven PostgreSQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-project.aivencloud.com \
+  --pg-port=11910 \
+  --pg-db=your_database \
+  --pg-user=avnadmin \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### AWS RDS PostgreSQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-instance.region.rds.amazonaws.com \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+#### Google Cloud SQL
+```bash
+node dist/src/database/migration-cli.js transfer \
+  --sqlite-file=./memory.db \
+  --pg-host=your-ip-address \
+  --pg-port=5432 \
+  --pg-db=your_database \
+  --pg-user=your_username \
+  --pg-pass=your_password \
+  --pg-ssl=true
+```
+
+### Migration Process
+
+The migration follows this sequence:
+
+1. **🔗 Connection Setup**: Establishes SSL connections to both databases
+2. **📋 Schema Deployment**: Creates PostgreSQL schema with pgvector extensions
+3. **👥 Entity Transfer**: Migrates all entities with observations and metadata
+4. **🔗 Relationship Transfer**: Preserves all entity relationships
+5. **📄 Document Transfer**: Transfers documents with complete content
+6. **🔍 Vector Re-embedding**: Re-embeds all content for optimal search performance
+7. **✅ Validation**: Verifies data consistency and completeness
+
+### Expected Results
+
+After successful migration, you should see:
+
+- **Entities**: 100% transfer rate with all observations
+- **Relationships**: 100% transfer rate maintaining graph structure  
+- **Documents**: 100% transfer rate with full content (not just metadata)
+- **Chunks**: Enhanced chunking (often more chunks than source due to better optimization)
+- **Embeddings**: Fresh embeddings for all entities and document chunks
+
+### Troubleshooting
+
+#### SSL Connection Issues
+```bash
+# For self-signed certificates, SSL is handled automatically
+# If you encounter certificate issues, ensure --pg-ssl=true is set
+```
+
+#### Large Dataset Migration
+```bash
+# The migration handles large datasets automatically
+# Monitor progress through detailed logging
+# Typical migration time: 2-5 minutes for 100+ entities and 50+ documents
+```
+
+#### Memory Usage
+```bash
+# The migration processes documents individually to minimize memory usage
+# No special configuration needed for large document collections
+```
 
 ## Development Setup
 
@@ -286,4 +532,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ---
 
-**Built with**: TypeScript, SQLite, sqlite-vec, Hugging Face Transformers, Model Context Protocol SDK
+**Built with**: TypeScript, SQLite, PostgreSQL, sqlite-vec, pgvector, Hugging Face Transformers, Model Context Protocol SDK
+
+**Database Support**: SQLite (sqlite-vec) , PostgreSQL (pgvector)
